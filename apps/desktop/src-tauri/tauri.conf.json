@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kiri",
+  "version": "0.1.0",
+  "identifier": "app.kiri.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kiri",
+        "width": 820,
+        "height": 680,
+        "minWidth": 640,
+        "minHeight": 560,
+        "center": true
+      },
+      {
+        "label": "source-selector",
+        "title": "Choose what to record",
+        "url": "index.html?window=source-selector",
+        "width": 620,
+        "height": 420,
+        "minHeight": 350,
+        "maxHeight": 500,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "decorations": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "recording-controller",
+        "title": "Kiri recording controls",
+        "url": "index.html?window=recording-controller",
+        "width": 280,
+        "height": 48,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "decorations": false,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src \u0027self\u0027; img-src \u0027self\u0027 asset: http://asset.localhost; style-src \u0027self\u0027 \u0027unsafe-inline\u0027; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": []
+  }
+}

@@ -1,0 +1,17 @@
+name: Windows quality
+on:
+  push:
+  pull_request:
+jobs:
+  phase0:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { run_install: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { toolchain: 1.91.0, components: rustfmt, clippy, targets: x86_64-pc-windows-msvc }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm phase0:gate

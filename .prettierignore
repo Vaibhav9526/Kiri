@@ -1,0 +1,9 @@
+target
+dist
+coverage
+pnpm-lock.yaml
+reference
+
+docs/PRD.md
+apps/desktop/*.js
+apps/desktop/*.d.ts

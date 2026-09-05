@@ -1,0 +1,25 @@
+{
+  "name": "kiri",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev": "pnpm --filter @kiri/desktop dev",
+    "build": "pnpm --filter @kiri/desktop build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "pnpm --filter @kiri/desktop lint",
+    "typecheck": "pnpm --filter @kiri/desktop typecheck",
+    "test": "pnpm --filter @kiri/desktop test",
+    "test:e2e": "pnpm --filter @kiri/desktop test:e2e",
+    "rust:fmt": "cargo fmt --all --check",
+    "rust:clippy": "cargo clippy --workspace --all-targets -- -D warnings",
+    "rust:test": "cargo test --workspace",
+    "tauri:dev": "pnpm --filter @kiri/desktop tauri dev",
+    "tauri:build": "pnpm --filter @kiri/desktop tauri build --no-bundle",
+    "phase0:gate": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e && pnpm rust:fmt && pnpm rust:clippy && pnpm rust:test && pnpm tauri:build"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
+  }
+}

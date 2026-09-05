@@ -1,0 +1,25 @@
+[package]
+name = "kiri-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "kiri_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.4.1", features = [] }
+
+[dependencies]
+chrono.workspace = true
+kiri-jobs = { path = "../../../crates/kiri-jobs" }
+kiri-persistence = { path = "../../../crates/kiri-persistence" }
+kiri-project = { path = "../../../crates/kiri-project" }
+serde.workspace = true
+tauri = { version = "2.8.5", features = [] }
+tauri-plugin-dialog = "2.4.0"
+tauri-plugin-log = "2.7.0"
+thiserror.workspace = true
+
