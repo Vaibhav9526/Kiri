@@ -30,3 +30,7 @@ Theme selector -> root data attributes + local mode -> Tauri event -> other wind
 - Background job state: canonical Rust `Job`; frontend receives typed `JobProgress` events.
 
 Capture, render, export, AI, automation, and MCP execution are intentionally absent until their phases.
+
+## Phase 1 capture data flow
+
+The Tauri layer validates typed requests and coordinates services. kiri-capture owns WGC, the QPC clock, and recovery metadata; kiri-audio owns separate shared-mode WASAPI microphone and loopback workers; kiri-camera owns Media Foundation camera capture; kiri-input owns cursor/click JSONL. Each source writes separate project segments and the recovery manifest is the incremental commit boundary.

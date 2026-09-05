@@ -18,3 +18,7 @@ Manifests are written to a temporary file in the project directory, flushed, and
 ## Deferred policy
 
 Provider consent, MCP Ask/Deny policy, capture exclusion, browser-profile isolation, log redaction, and destructive-action approvals are specified by the PRD and implemented only in their scheduled phases.
+
+## Phase 1 input boundary
+
+Kiri installs only global recording-control shortcuts and a buffered mouse hook. It records cursor positions, buttons, wheel activity and click classification; it does not install a keyboard-content hook or store typed text. Shortcut profiles are limited to explicit Ctrl+Shift or Ctrl+Alt recording commands.

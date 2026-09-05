@@ -17,7 +17,8 @@
     "rust:test": "cargo test --workspace",
     "tauri:dev": "pnpm --filter @kiri/desktop tauri dev",
     "tauri:build": "pnpm --filter @kiri/desktop tauri build --no-bundle",
-    "phase0:gate": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e && pnpm rust:fmt && pnpm rust:clippy && pnpm rust:test && pnpm tauri:build"
+    "phase0:gate": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e && pnpm rust:fmt && pnpm rust:clippy && pnpm rust:test && pnpm tauri:build",
+    "phase1:gate": "pnpm phase0:gate"
   },
   "devDependencies": {
     "prettier": "3.6.2"
