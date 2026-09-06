@@ -9,7 +9,7 @@ use tempfile::NamedTempFile;
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const MANIFEST_FILE: &str = "project.json";
 pub const PROJECT_DIRECTORIES: &[&str] = &[
     "media",
@@ -85,6 +85,19 @@ pub struct ProjectManifest {
     pub artifacts: Vec<GeneratedArtifact>,
     #[serde(default)]
     pub cache_entries: Vec<CacheEntry>,
+    #[serde(default)]
+    pub recording_sessions: Vec<RecordingSessionMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSessionMetadata {
+    pub id: Uuid,
+    pub wall_time_utc: DateTime<Utc>,
+    pub qpc_origin_ticks: i64,
+    pub qpc_frequency: i64,
+    pub paused_duration: TimeMicros,
+    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -187,6 +200,7 @@ impl ProjectManifest {
             edit_regions: vec![],
             artifacts: vec![],
             cache_entries: vec![],
+            recording_sessions: vec![],
         }
     }
 
@@ -223,6 +237,14 @@ impl ProjectManifest {
         for region in &self.edit_regions {
             region.start.validate()?;
             region.duration.validate()?;
+        }
+        for session in &self.recording_sessions {
+            if session.id.is_nil() || session.qpc_frequency <= 0 {
+                return Err(ProjectError::Validation(
+                    "recording clock metadata is invalid".into(),
+                ));
+            }
+            session.paused_duration.validate()?;
         }
         Ok(())
     }
@@ -340,7 +362,7 @@ pub fn migrate(mut value: serde_json::Value) -> Result<serde_json::Value, Projec
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
     match version {
-        0 => {
+        0 | 1 => {
             let object = value.as_object_mut().ok_or_else(|| {
                 ProjectError::Validation("manifest root must be an object".into())
             })?;
@@ -360,6 +382,9 @@ pub fn migrate(mut value: serde_json::Value) -> Result<serde_json::Value, Projec
                 .or_insert_with(|| serde_json::json!([]));
             object
                 .entry("cacheEntries")
+                .or_insert_with(|| serde_json::json!([]));
+            object
+                .entry("recordingSessions")
                 .or_insert_with(|| serde_json::json!([]));
             Ok(value)
         }

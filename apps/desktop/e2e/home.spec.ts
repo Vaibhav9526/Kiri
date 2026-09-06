@@ -22,10 +22,13 @@ test('project naming surface is compact and keyboard reachable', async ({ page }
 
 test('source selector renders as a focused boundary', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kiri.theme.mode', 'dark'));
-  await page.setViewportSize({ width: 620, height: 420 });
+  await page.setViewportSize({ width: 760, height: 600 });
   await page.goto('/?window=source-selector');
-  await expect(page.getByText('Source discovery begins in Phase 1')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Displays' })).toBeDisabled();
+  await expect(page.getByText('Capture setup')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Displays' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
   await expect(page).toHaveScreenshot('source-selector-dark.png', { animations: 'disabled' });
 });
 
@@ -34,6 +37,6 @@ test('recording controller boundary is honest and disabled', async ({ page }) =>
   await page.setViewportSize({ width: 280, height: 48 });
   await page.goto('/?window=recording-controller');
   await expect(page.getByLabel('Recording controller')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Pause' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Pause recording' })).toBeDisabled();
   await expect(page).toHaveScreenshot('recording-controller-dark.png', { animations: 'disabled' });
 });

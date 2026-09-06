@@ -6,6 +6,8 @@ import { ThemeProvider } from '@/theme/ThemeProvider';
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('@/ipc/client', () => ({
   listRecentProjects: vi.fn().mockResolvedValue([]),
+  listRecoverableRecordings: vi.fn().mockResolvedValue([]),
+  recoverRecording: vi.fn(),
   createProject: vi.fn(),
   openProject: vi.fn(),
 }));
@@ -18,7 +20,7 @@ describe('Home', () => {
     );
     expect(screen.getByRole('heading', { name: 'Create a walkthrough' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /New Kiri Project/ })).toBeEnabled();
-    expect(screen.getByRole('button', { name: /New Manual Recording/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /New Manual Recording/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: /New AI Walkthrough/ })).toHaveTextContent(
       'Unavailable until Phase 4',
     );

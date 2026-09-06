@@ -1,19 +1,31 @@
 import { FolderOpen, MonitorUp, MousePointer2, Plus, Sparkles, Video, XCircle } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useEffect, useState, type FormEvent } from 'react';
-import { createProject, listRecentProjects, openProject } from '@/ipc/client';
-import type { ProjectSummary } from '@/ipc/types';
+import {
+  createProject,
+  listRecentProjects,
+  listRecoverableRecordings,
+  openProject,
+  recoverRecording,
+} from '@/ipc/client';
+import type { ProjectSummary, RecoveryCandidate } from '@/ipc/types';
 import { ThemeSelector } from './ThemeSelector';
 
 export function Home() {
   const [recents, setRecents] = useState<ProjectSummary[]>([]);
+  const [recoveries, setRecoveries] = useState<RecoveryCandidate[]>([]);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [isNaming, setIsNaming] = useState(false);
   const [projectName, setProjectName] = useState('Untitled Walkthrough');
+  const [createIntent, setCreateIntent] = useState<'project' | 'recording'>('project');
   useEffect(() => {
     void listRecentProjects()
       .then(setRecents)
+      .catch((error: unknown) => setNotice(String(error)));
+    void listRecoverableRecordings()
+      .then(setRecoveries)
       .catch((error: unknown) => setNotice(String(error)));
   }, []);
 
@@ -36,6 +48,12 @@ export function Home() {
       setRecents((current) => [item, ...current.filter((value) => value.id !== item.id)]);
       setNotice(`Created ${item.title}`);
       setIsNaming(false);
+      if (createIntent === 'recording') {
+        localStorage.setItem('kiri.captureProjectPath', item.path);
+        const selector = await WebviewWindow.getByLabel('source-selector');
+        await selector?.show();
+        await selector?.setFocus();
+      }
     } catch (error) {
       setNotice(`Project was not created. ${String(error)}`);
     } finally {
@@ -73,10 +91,44 @@ export function Home() {
           <h1 id="home-heading">Create a walkthrough</h1>
           <p>Start with a local project. Your media and edits will stay on this PC.</p>
         </div>
+        {recoveries.length > 0 && (
+          <section className="recovery-offer" aria-labelledby="recovery-heading">
+            <div>
+              <strong id="recovery-heading">Interrupted recording found</strong>
+              <small>Finalized segments can be restored without modifying captured media.</small>
+            </div>
+            {recoveries.map((item) => (
+              <button
+                key={item.sessionId}
+                onClick={() =>
+                  void recoverRecording(item.projectPath)
+                    .then((project) => {
+                      setRecoveries((current) =>
+                        current.filter((value) => value.sessionId !== item.sessionId),
+                      );
+                      setRecents((current) => [
+                        project,
+                        ...current.filter((value) => value.id !== project.id),
+                      ]);
+                      setNotice(
+                        `Recovered ${item.finalizedSegments} finalized segments from ${item.projectTitle}.`,
+                      );
+                    })
+                    .catch((error: unknown) => setNotice(`Recovery failed. ${String(error)}`))
+                }
+              >
+                Recover
+              </button>
+            ))}
+          </section>
+        )}
         <div className="primary-actions">
           <button
             className="action action-primary"
-            onClick={() => setIsNaming(true)}
+            onClick={() => {
+              setCreateIntent('project');
+              setIsNaming(true);
+            }}
             disabled={busy}
           >
             <span className="action-icon">
@@ -87,13 +139,21 @@ export function Home() {
               <small>Create the portable project foundation.</small>
             </span>
           </button>
-          <button className="action" disabled title="Manual recording begins in Phase 1">
+          <button
+            className="action"
+            onClick={() => {
+              setCreateIntent('recording');
+              setProjectName('Untitled Recording');
+              setIsNaming(true);
+            }}
+            disabled={busy}
+          >
             <span className="action-icon">
               <MousePointer2 aria-hidden="true" />
             </span>
             <span>
               <strong>New Manual Recording</strong>
-              <small>Unavailable until Phase 1</small>
+              <small>Choose a source and record locally.</small>
             </span>
           </button>
           <button className="action" disabled title="AI Walkthrough begins in Phase 4">

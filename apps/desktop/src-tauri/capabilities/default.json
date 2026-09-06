@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimum capabilities for Kiri Phase 0",
+  "description": "Kiri desktop capabilities",
   "windows": ["main", "source-selector", "recording-controller"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister-all"
+  ]
 }
