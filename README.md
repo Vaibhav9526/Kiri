@@ -27,15 +27,9 @@
   <a href="docs/DEVELOPMENT.md">Developer guide</a>
 </p>
 
----
-
-<p align="center">
-  <img src="apps/desktop/e2e/home.spec.ts-snapshots/home-dark-win32.png" width="820" alt="Kiri Home in dark mode" />
-</p>
-
 ## A recording studio built around the walkthrough
 
-Kiri is designed for product builders who want the clarity of a carefully directed demo without sending raw footage through a cloud service. It combines a compact, Recordly-shaped recording experience with a Windows-native media core and a portable `.kiri` project format.
+Kiri is designed for product builders who want the clarity of a carefully directed demo without sending raw footage through a cloud service. It combines a compact recording experience with a Windows-native media core and a portable `.kiri` project format.
 
 The product direction includes:
 
@@ -184,12 +178,6 @@ Read [Architecture](docs/ARCHITECTURE.md), [Security](docs/SECURITY.md), and the
 | 6     | Distribution, signing, performance, and advanced export hardening                    | Planned  |
 
 Work proceeds one verified phase at a time. A phase is only marked complete after its documented quality gate passes.
-
-## Design lineage
-
-Kiri’s frontend structure and interaction density are intentionally adapted from [Recordly](https://github.com/webadderallorg/Recordly). Its native modular-media direction is informed by [Cap](https://github.com/CapSoftware/Cap). Kiri replaces their backend assumptions with its own Tauri/Rust architecture, `.kiri` project model, local-first boundaries, recording clock, and AI/MCP safety model.
-
-See the [Recordly UI audit](docs/ui/RECORDLY_UI_AUDIT.md) for the source-to-target mapping. Kiri is an independent project and is not affiliated with Recordly or Cap.
 
 ---
 
