@@ -1,0 +1,15 @@
+[package]
+name = "kiri-camera"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+nokhwa = { version = "0.10.11", default-features = false, features = ["input-native"] }
+windows-capture = "2.0.1"

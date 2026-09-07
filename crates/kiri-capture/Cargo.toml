@@ -1,0 +1,31 @@
+[package]
+name = "kiri-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64 = "0.22.1"
+chrono.workspace = true
+crossbeam-channel = "0.5.15"
+kiri-project = { path = "../kiri-project" }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-capture = "2.0.1"
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Performance",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[[bin]]
+name = "kiri-capture-diagnostic"
+path = "src/bin/diagnostic.rs"

@@ -2,7 +2,11 @@
 resolver = "2"
 members = [
   "apps/desktop/src-tauri",
+  "crates/kiri-audio",
+  "crates/kiri-capture",
+  "crates/kiri-camera",
   "crates/kiri-credentials",
+  "crates/kiri-input",
   "crates/kiri-jobs",
   "crates/kiri-persistence",
   "crates/kiri-project",

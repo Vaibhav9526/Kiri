@@ -570,3 +570,416 @@ button:disabled {
     grid-column: 1 / -1;
   }
 }
+.capture-setup {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: 52px 40px 1fr 58px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow-floating);
+}
+.floating-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.floating-header > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.floating-header strong {
+  font-size: 13px;
+}
+.floating-header span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.icon-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.icon-button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.icon-button svg {
+  width: 15px;
+}
+.source-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.source-tabs button {
+  height: 29px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 650;
+}
+.capture-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 286px;
+}
+.source-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  border-right: 1px solid var(--border);
+}
+.source-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+}
+.source-item:hover {
+  background: var(--surface-raised);
+}
+.source-item.is-selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--surface));
+}
+.source-item:disabled {
+  opacity: 0.52;
+}
+.source-thumbnail {
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas);
+}
+.source-thumbnail svg {
+  width: 20px;
+  color: var(--muted-foreground);
+}
+.source-item strong,
+.source-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-item strong {
+  font-size: 11px;
+}
+.source-item small {
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+}
+.source-item > svg {
+  width: 15px;
+  color: var(--accent);
+}
+.source-item em {
+  color: var(--warning);
+  font-size: 9px;
+  font-style: normal;
+}
+.source-loading {
+  padding: 30px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-align: center;
+}
+.capture-options {
+  overflow: auto;
+  padding: 7px 12px;
+  background: var(--surface);
+}
+.setting-row {
+  min-height: 39px;
+  display: grid;
+  grid-template-columns: 21px 78px minmax(0, 1fr);
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+}
+.setting-icon svg {
+  width: 14px;
+  color: var(--muted-foreground);
+}
+.setting-row label {
+  font-weight: 650;
+}
+.setting-row > div:last-child {
+  display: flex;
+  justify-content: flex-end;
+}
+.setting-row select {
+  width: 100%;
+  height: 27px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input);
+  color: var(--foreground);
+  font-size: 10px;
+}
+.switch {
+  width: 30px;
+  height: 17px;
+  padding: 2px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--muted);
+}
+.switch span {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--foreground);
+  transition: transform 0.15s;
+}
+.switch.is-on {
+  background: var(--primary);
+}
+.switch.is-on span {
+  transform: translateX(13px);
+  background: var(--primary-foreground);
+}
+.segmented {
+  display: flex;
+}
+.segmented button {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  background: var(--input);
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.segmented button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.segmented button:last-child {
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
+}
+.segmented button.is-active {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.camera-preview {
+  position: relative;
+  height: 90px;
+  margin: 7px 0;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--canvas);
+}
+.camera-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+.camera-preview span {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #000a;
+  color: #fff;
+  font-size: 8px;
+}
+.disk-estimate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+}
+.disk-estimate svg {
+  width: 13px;
+}
+.capture-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.capture-footer > div {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted-foreground);
+  font-size: 9px;
+}
+.record-action {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--primary-gradient);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.record-action > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+}
+.record-action:disabled {
+  filter: saturate(0);
+  opacity: 0.45;
+}
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  background: color-mix(in srgb, var(--background) 86%, transparent);
+  backdrop-filter: blur(8px);
+}
+.countdown-overlay span {
+  font-size: 72px;
+  font-weight: 800;
+}
+.countdown-overlay small {
+  color: var(--muted-foreground);
+}
+.record-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--danger);
+  font-size: 9px;
+}
+.controller-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+.controller-shell.is-recording .record-dot {
+  animation: record-pulse 1.2s ease-in-out infinite;
+}
+.controller-shell.is-paused .record-dot {
+  background: var(--warning);
+}
+.stop-button {
+  color: var(--danger);
+}
+.mic-state {
+  display: grid;
+  place-items: center;
+  color: var(--muted-foreground);
+}
+.mic-state svg {
+  width: 13px;
+}
+@keyframes record-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.meter-row {
+  height: 12px;
+  position: relative;
+  margin: 3px 0 5px 99px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--muted);
+}
+.meter-row > span {
+  display: block;
+  height: 100%;
+  background: var(--success);
+  transition: width 0.1s linear;
+}
+.meter-row.is-clipped > span {
+  background: var(--danger);
+}
+.meter-row small {
+  position: absolute;
+  right: 3px;
+  top: 0;
+  color: var(--foreground);
+  font-size: 8px;
+  line-height: 12px;
+}
+.recovery-offer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--warning);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--warning) 8%, var(--panel));
+}
+.recovery-offer > div {
+  min-width: 0;
+  flex: 1;
+}
+.recovery-offer strong,
+.recovery-offer small {
+  display: block;
+}
+.recovery-offer strong {
+  font-size: 11px;
+}
+.recovery-offer small {
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+}
+.recovery-offer button {
+  height: 30px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 650;
+}
+
+.source-thumbnail img {
+  width: 100%;
+  height: 100%;
+  border-radius: 5px;
+  object-fit: cover;
+}
