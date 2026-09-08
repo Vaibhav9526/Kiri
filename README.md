@@ -1,3 +1,5 @@
+## PHASE 0 COMPLETED
+
 <p align="center">
   <img src="apps/desktop/public/kiri-logo.png" width="168" alt="Kiri logo" />
 </p>
