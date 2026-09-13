@@ -1,4 +1,6 @@
-## PHASE 1 COMPLETED
+<p align="center">
+  <strong>✅ Phase 1 complete — Windows-native recording</strong>
+</p>
 
 <p align="center">
   <img src="apps/desktop/public/kiri-logo.png" width="168" alt="Kiri logo" />
@@ -44,11 +46,27 @@ The product direction includes:
 Kiri is intentionally personal and local. There are no accounts, subscriptions, analytics backend, hosted library, or required cloud services.
 
 > [!IMPORTANT]
-> Kiri is under active development. The repository currently contains the completed Phase 0 foundation; native recording, the full editor, export, AI, and MCP execution are product roadmap work—not shipped features yet.
+> Kiri is under active development. Phase 0 (foundation) and Phase 1 (native recording) are complete. The full editor, deterministic MP4 export, AI, and MCP execution are product roadmap work—not shipped features yet.
 
 ## Current status
 
-**Phase 0 — Foundation and Architecture: complete**
+Work proceeds phase by phase. A phase is only marked complete after its documented quality gate passes.
+
+### Phase 1 — Windows-native recording and recoverable synchronized sources: complete
+
+Recording is real, local, and recoverable. Phase 1 delivered:
+
+- display and application-window capture through Windows Graphics Capture with H.264 hardware encoding
+- independent microphone, system loopback audio (WASAPI), and camera (Media Foundation) sources
+- cursor and click input telemetry with DPI-aware physical/logical coordinate mapping
+- per-source ready offsets committed against a shared QPC recording clock, so sources that start and stop independently stay synchronized
+- pause/resume segmentation into independently finalized media segments
+- crash-safe recovery: forced termination mid-recording still yields every finalized segment
+- source thumbnails for the picker, plus standalone capture diagnostics binaries
+
+The development machine's measured hardware limitation—34.1 WGC frame callbacks/s on a 30-second desktop sample with zero queue drops—is measured and reported, not hidden. Full details are in [Implementation Status](docs/IMPLEMENTATION_STATUS.md) and [Verification](docs/VERIFICATION.md).
+
+### Phase 0 — Foundation and Architecture: complete
 
 The application can create, atomically save, index, migrate, and reopen an empty portable `.kiri` project. The foundation includes:
 
@@ -61,7 +79,7 @@ The application can create, atomically save, index, migrate, and reopen an empty
 - a Windows Credential Manager boundary with an in-memory test implementation
 - unit, integration, browser smoke, and golden screenshot coverage
 
-See [Implementation Status](docs/IMPLEMENTATION_STATUS.md) and [Verification](docs/VERIFICATION.md) for the exact gate results and the manual checks that remain unavailable.
+See [Implementation Status](docs/IMPLEMENTATION_STATUS.md) and [Verification](docs/VERIFICATION.md) for the exact gate results per phase.
 
 ## The `.kiri` project
 
@@ -110,13 +128,13 @@ The current configuration produces an unbundled release executable at `target/re
 
 ## Quality gate
 
-Run the complete verified Phase 0 gate from the repository root:
+Run the complete verified gate for the current phase from the repository root:
 
 ```powershell
-pnpm phase0:gate
+pnpm phase1:gate
 ```
 
-It checks formatting, linting, strict TypeScript, frontend tests, browser smoke and golden tests, Rust formatting, Clippy with warnings denied, Rust workspace tests, and the Tauri release build.
+It checks formatting, linting, strict TypeScript, frontend tests, browser smoke and golden tests, Rust formatting, Clippy with warnings denied, Rust workspace tests, and the Tauri release build. `pnpm phase0:gate` runs the same gate pinned to the Phase 0 scope.
 
 Individual commands are also available:
 
@@ -138,6 +156,10 @@ flowchart LR
     UI[React + TypeScript UI]
     IPC[Typed Tauri IPC]
     Shell[Tauri desktop shell]
+    Capture[kiri-capture]
+    Audio[kiri-audio]
+    Camera[kiri-camera]
+    Input[kiri-input]
     Project[kiri-project]
     Persistence[kiri-persistence]
     Jobs[kiri-jobs]
@@ -147,16 +169,24 @@ flowchart LR
     WinCred[(Windows Credential Manager)]
 
     UI --> IPC --> Shell
+    Shell --> Capture --> Disk
+    Shell --> Audio --> Disk
+    Shell --> Camera --> Disk
+    Shell --> Input
     Shell --> Project --> Disk
     Shell --> Persistence --> SQLite
     Shell --> Jobs
     Shell --> Credentials --> WinCred
 ```
 
-Tauri commands stay thin. Project, persistence, jobs, and credential behavior live in testable Rust crates that do not depend on the React interface.
+Tauri commands stay thin. Capture, project, persistence, jobs, and credential behavior live in testable Rust crates that do not depend on the React interface.
 
 ```text
 apps/desktop/             Tauri application and React surfaces
+crates/kiri-capture/      Windows Graphics Capture screen/window recording
+crates/kiri-audio/        WASAPI microphone and system loopback capture
+crates/kiri-camera/       Media Foundation camera enumeration and capture
+crates/kiri-input/        Cursor and click telemetry with DPI mapping
 crates/kiri-project/      Project schema, validation, migration, and atomic save
 crates/kiri-persistence/  SQLite migrations, settings, and recent projects
 crates/kiri-jobs/         Cancellable background-job state machine
@@ -172,8 +202,8 @@ Read [Architecture](docs/ARCHITECTURE.md), [Security](docs/SECURITY.md), and the
 | Phase | Scope                                                                                | Status   |
 | ----- | ------------------------------------------------------------------------------------ | -------- |
 | 0     | Foundation, portable projects, persistence, jobs, credentials, and application shell | Complete |
-| 1     | Windows-native recording and recoverable synchronized sources                        | Next     |
-| 2     | Editor, timeline, deterministic renderer, and local MP4 export                       | Planned  |
+| 1     | Windows-native recording and recoverable synchronized sources                        | Complete |
+| 2     | Editor, timeline, deterministic renderer, and local MP4 export                       | Next     |
 | 3     | Presentation intelligence, captions, processing, and presets                         | Planned  |
 | 4     | AI providers and isolated Playwright walkthrough execution                           | Planned  |
 | 5     | Bidirectional MCP with explicit safety policy                                        | Planned  |
