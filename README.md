@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>✅ Phase 1 complete — Windows-native recording</strong>
+  <strong>Phase 1 complete — Windows-native recording</strong>
 </p>
 
 <p align="center">
