@@ -8,6 +8,7 @@ import {
   listRecoverableRecordings,
   openProject,
   recoverRecording,
+  setActiveProject,
 } from '@/ipc/client';
 import type { ProjectSummary, RecoveryCandidate } from '@/ipc/types';
 import { ThemeSelector } from './ThemeSelector';
@@ -48,8 +49,8 @@ export function Home() {
       setRecents((current) => [item, ...current.filter((value) => value.id !== item.id)]);
       setNotice(`Created ${item.title}`);
       setIsNaming(false);
+      await setActiveProject(item.path);
       if (createIntent === 'recording') {
-        localStorage.setItem('kiri.captureProjectPath', item.path);
         const selector = await WebviewWindow.getByLabel('source-selector');
         await selector?.show();
         await selector?.setFocus();
@@ -68,6 +69,7 @@ export function Home() {
     try {
       const item = await openProject(path);
       setRecents((current) => [item, ...current.filter((value) => value.id !== item.id)]);
+      await setActiveProject(item.path);
       setNotice(`Opened ${item.title}`);
     } catch (error) {
       setNotice(`Project could not be opened. ${String(error)}`);

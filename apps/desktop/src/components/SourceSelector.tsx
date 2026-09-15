@@ -14,14 +14,18 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  getActiveProject,
   getAudioMeter,
   getCaptureThumbnail,
   listAudioDevices,
   listCameraDevices,
   listCaptureSources,
+  listRecentProjects,
+  setActiveProject,
+  setSelectedSource,
   startRecording,
 } from '@/ipc/client';
-import type { AudioDevice, CameraDevice, CaptureSource } from '@/ipc/types';
+import type { AudioDevice, CameraDevice, CaptureSource, ProjectSummary } from '@/ipc/types';
 import { ThemeSelector } from './ThemeSelector';
 
 const browserSources: CaptureSource[] = [
@@ -67,17 +71,33 @@ export function SourceSelector() {
   const [microphoneClipped, setMicrophoneClipped] = useState(false);
   const [loading, setLoading] = useState(true);
   const previewRef = useRef<HTMLVideoElement>(null);
-  const projectPath = localStorage.getItem('kiri.captureProjectPath') ?? '';
+  const [projectPath, setProjectPath] = useState(
+    () => localStorage.getItem('kiri.captureProjectPath') ?? '',
+  );
+  const [recents, setRecents] = useState<ProjectSummary[]>([]);
 
   async function refresh() {
     setLoading(true);
     setNotice('');
     try {
-      const [nextSources, nextAudio, nextCameras] = await Promise.all([
-        listCaptureSources(),
-        listAudioDevices(),
-        listCameraDevices(),
-      ]);
+      const [nextSources, nextAudio, nextCameras, activePath, recentProjects] =
+        await Promise.all([
+          listCaptureSources(),
+          listAudioDevices(),
+          listCameraDevices(),
+          getActiveProject(),
+          listRecentProjects().catch(() => [] as ProjectSummary[]),
+        ]);
+      const resolvedPath =
+        activePath ||
+        localStorage.getItem('kiri.captureProjectPath') ||
+        recentProjects.find((item) => !item.missing)?.path ||
+        '';
+      if (resolvedPath) {
+        setProjectPath(resolvedPath);
+        localStorage.setItem('kiri.captureProjectPath', resolvedPath);
+      }
+      setRecents(recentProjects);
       const resolved = nextSources.length ? nextSources : browserSources;
       setSources(resolved);
       if ('__TAURI_INTERNALS__' in window) {
@@ -171,7 +191,11 @@ export function SourceSelector() {
     counting === null;
 
   async function beginCountdown() {
-    if (!canStart) return;
+    if (!canStart) {
+      if (!projectPath)
+        setNotice('Create a recording project from Home first, then reopen capture setup.');
+      return;
+    }
     if (countdown > 0) {
       for (let value = countdown; value > 0; value -= 1) {
         setCounting(value);
@@ -180,6 +204,8 @@ export function SourceSelector() {
     }
     setCounting(0);
     try {
+      await setActiveProject(projectPath);
+      await setSelectedSource(sourceId);
       await startRecording({
         projectPath,
         sourceId,
@@ -188,6 +214,7 @@ export function SourceSelector() {
         cameraId: cameraId || null,
         fps,
       });
+      setCounting(null);
       const controller = await WebviewWindow.getByLabel('recording-controller');
       await controller?.show();
       await controller?.setFocus();
@@ -360,11 +387,41 @@ export function SourceSelector() {
       </section>
       <footer className="capture-footer">
         <div role="status">
-          {notice || 'Ctrl+Shift+R start · Ctrl+Shift+P pause · Ctrl+Shift+S stop'}
+          {notice ||
+            (!projectPath
+              ? 'Create a recording project from Home first'
+              : 'Ctrl+Shift+R start · Ctrl+Shift+P pause · Ctrl+Shift+S stop')}
         </div>
+        {!projectPath && recents.length > 0 && (
+          <select
+            aria-label="Recording project"
+            value={projectPath}
+            onChange={(event) => {
+              setProjectPath(event.target.value);
+              localStorage.setItem('kiri.captureProjectPath', event.target.value);
+              void setActiveProject(event.target.value).catch(() => undefined);
+            }}
+          >
+            <option value="">Select project…</option>
+            {recents
+              .filter((item) => !item.missing)
+              .map((item) => (
+                <option key={item.id} value={item.path}>
+                  {item.title}
+                </option>
+              ))}
+          </select>
+        )}
         <button
           className="record-action"
           disabled={!canStart}
+          title={
+            !projectPath
+              ? 'Create a recording project from Home first'
+              : !selectedSource || selectedSource.availability !== 'available'
+                ? 'Select an available source'
+                : 'Start recording'
+          }
           onClick={() => void beginCountdown()}
         >
           <span /> Start recording

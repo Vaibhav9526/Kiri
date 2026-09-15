@@ -61,6 +61,7 @@ export function RecordingController() {
       await getCurrentWindow().hide();
     } catch (error) {
       setNotice(String(error));
+    } finally {
       setBusy(false);
     }
   }

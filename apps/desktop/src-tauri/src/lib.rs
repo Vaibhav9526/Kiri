@@ -480,20 +480,47 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
         .commit(&root)
         .map_err(|e| CommandError::Recording(e.to_string()))?;
 
-    let source = kiri_capture::windows::enumerate_sources()
-        .map_err(|e| CommandError::Recording(e.to_string()))?
+    let enumerated = kiri_capture::windows::enumerate_sources()
+        .map_err(|e| CommandError::Recording(e.to_string()))?;
+    let source = enumerated
         .into_iter()
-        .find(|source| source.id == active.request.source_id)
-        .ok_or_else(|| {
-            CommandError::Recording("selected source closed before telemetry started".into())
-        })?;
-    let input = kiri_input::start_recording(
+        .find(|source| source.id == active.request.source_id);
+    let Some(source) = source else {
+        let _ = screen.stop();
+        if let Some(handle) = microphone {
+            let _ = handle.stop();
+        }
+        if let Some(handle) = system_audio {
+            let _ = handle.stop();
+        }
+        if let Some(handle) = camera {
+            let _ = handle.stop();
+        }
+        return Err(CommandError::Recording(
+            "selected source closed before telemetry started".into(),
+        ));
+    };
+    let input = match kiri_input::start_recording(
         root.join(segment_path(SegmentKind::Cursor, index)),
         root.join(segment_path(SegmentKind::Clicks, index)),
         source.bounds,
         start_micros,
-    )
-    .map_err(|e| CommandError::Recording(e.to_string()))?;
+    ) {
+        Ok(handle) => handle,
+        Err(error) => {
+            let _ = screen.stop();
+            if let Some(handle) = microphone {
+                let _ = handle.stop();
+            }
+            if let Some(handle) = system_audio {
+                let _ = handle.stop();
+            }
+            if let Some(handle) = camera {
+                let _ = handle.stop();
+            }
+            return Err(CommandError::Recording(error.to_string()));
+        }
+    };
 
     active.screen = Some(screen);
     active.microphone = microphone;
