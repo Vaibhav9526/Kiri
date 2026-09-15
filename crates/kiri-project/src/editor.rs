@@ -103,9 +103,20 @@ impl ZoomRegion {
         if self.end_ms < self.start_ms {
             std::mem::swap(&mut self.start_ms, &mut self.end_ms);
         }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
+        }
         self.depth = self.depth.clamp(1, 6);
         self.focus = self.focus.normalized();
         self
+    }
+
+    pub fn validate(&self) -> Result<(), RegionOpError> {
+        if self.id.trim().is_empty() {
+            return Err(RegionOpError::EmptyId);
+        }
+        validate_range(self.start_ms, self.end_ms)?;
+        Ok(())
     }
 }
 
@@ -137,6 +148,9 @@ impl ClipRegion {
         if self.end_ms < self.start_ms {
             std::mem::swap(&mut self.start_ms, &mut self.end_ms);
         }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
+        }
         if !self.speed.is_finite() || self.speed <= 0.0 {
             self.speed = 1.0;
         }
@@ -156,16 +170,23 @@ impl ClipRegion {
     }
 
     /// Source out-point derived from display duration and speed. Mirrors
-    /// Recordly `getClipSourceEndMs`.
+    /// Recordly `getClipSourceEndMs`. Saturating: extreme timeline values
+    /// (i64::MAX/MIN from corrupt payloads) must never panic on overflow.
     #[must_use]
     pub fn source_end(&self) -> i64 {
-        let display = (self.end_ms - self.start_ms).max(0) as f64;
+        let display = self.end_ms.saturating_sub(self.start_ms).max(0) as f64;
         let speed = if self.speed.is_finite() && self.speed > 0.0 {
             self.speed
         } else {
             1.0
         };
-        self.source_start() + (display * speed).round() as i64
+        let advance = (display * speed).round();
+        let advance_i64 = if advance.is_finite() {
+            advance as i64
+        } else {
+            i64::MAX
+        };
+        self.source_start().saturating_add(advance_i64)
     }
 }
 
@@ -177,6 +198,26 @@ pub struct TrimRegion {
     pub end_ms: i64,
 }
 
+impl TrimRegion {
+    pub fn normalized(mut self) -> Self {
+        if self.end_ms < self.start_ms {
+            std::mem::swap(&mut self.start_ms, &mut self.end_ms);
+        }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
+        }
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), RegionOpError> {
+        if self.id.trim().is_empty() {
+            return Err(RegionOpError::EmptyId);
+        }
+        validate_range(self.start_ms, self.end_ms)?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeedRegion {
@@ -184,6 +225,58 @@ pub struct SpeedRegion {
     pub start_ms: i64,
     pub end_ms: i64,
     pub speed: f64,
+}
+
+/// Discrete playback speeds matching Recordly `SPEED_OPTIONS`.
+pub const ALLOWED_SPEEDS: [f64; 7] = [0.25, 0.5, 0.75, 1.25, 1.5, 1.75, 2.0];
+
+fn normalize_speed_value(speed: f64) -> f64 {
+    if !speed.is_finite() {
+        return 1.5;
+    }
+    if ALLOWED_SPEEDS.contains(&speed) {
+        return speed;
+    }
+    // Snap arbitrary finite input to the nearest allowed speed so loaded
+    // foreign payloads degrade gracefully instead of failing to open.
+    let mut best = ALLOWED_SPEEDS[0];
+    let mut best_distance = (speed - best).abs();
+    for candidate in ALLOWED_SPEEDS.iter().skip(1) {
+        let distance = (speed - candidate).abs();
+        if distance < best_distance {
+            best_distance = distance;
+            best = *candidate;
+        }
+    }
+    best
+}
+
+impl SpeedRegion {
+    pub fn normalized(mut self) -> Self {
+        if self.end_ms < self.start_ms {
+            std::mem::swap(&mut self.start_ms, &mut self.end_ms);
+        }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
+        }
+        self.speed = normalize_speed_value(self.speed);
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), RegionOpError> {
+        if self.id.trim().is_empty() {
+            return Err(RegionOpError::EmptyId);
+        }
+        validate_range(self.start_ms, self.end_ms)?;
+        if !self.speed.is_finite() || self.speed <= 0.0 {
+            return Err(RegionOpError::InvalidRange {
+                start_ms: self.start_ms,
+                end_ms: self.end_ms,
+                reason: "speed must be a positive finite number".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -217,6 +310,20 @@ impl Default for CropRegion {
             width: 1.0,
             height: 1.0,
         }
+    }
+}
+
+impl CropRegion {
+    /// Clamp into a valid unit-rectangle (Recordly `cropRegion` rules):
+    /// x/y in 0..1, width/height in 0.01..(1-origin). Total over NaN/inf.
+    pub fn normalized(mut self) -> Self {
+        self.x = clamp_finite_or(self.x, 0.0, 1.0, 0.0);
+        self.y = clamp_finite_or(self.y, 0.0, 1.0, 0.0);
+        let max_width = (1.0 - self.x).max(0.01);
+        let max_height = (1.0 - self.y).max(0.01);
+        self.width = clamp_finite_or(self.width, 0.01, max_width, max_width.min(1.0));
+        self.height = clamp_finite_or(self.height, 0.01, max_height, max_height.min(1.0));
+        self
     }
 }
 
@@ -273,12 +380,45 @@ impl Default for WebcamOverlay {
     }
 }
 
+impl WebcamOverlay {
+    pub fn normalized(mut self) -> Self {
+        // Empty-string paths come from foreign payloads with `""`; they mean
+        // "no camera file" and must not survive as a path to join/resolve.
+        if self
+            .source_path
+            .as_deref()
+            .is_some_and(|p| p.trim().is_empty())
+        {
+            self.source_path = None;
+        }
+        self.crop = self.crop.normalized();
+        self.position_x = clamp01(self.position_x);
+        self.position_y = clamp01(self.position_y);
+        self.size = clamp_finite_or(self.size, 0.05, 1.0, 0.25);
+        self.roundness = clamp_finite_or(self.roundness, 0.0, 1.0, 0.2);
+        self.shadow = clamp_finite_or(self.shadow, 0.0, 1.0, 0.4);
+        self
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptionWord {
     pub text: String,
     pub start_ms: i64,
     pub end_ms: i64,
+}
+
+impl CaptionWord {
+    pub fn normalized(mut self) -> Self {
+        if self.end_ms < self.start_ms {
+            std::mem::swap(&mut self.start_ms, &mut self.end_ms);
+        }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -291,6 +431,49 @@ pub struct CaptionCue {
     pub text: String,
     #[serde(default)]
     pub words: Vec<CaptionWord>,
+}
+
+impl CaptionCue {
+    pub fn normalized(mut self) -> Self {
+        if self.end_ms < self.start_ms {
+            std::mem::swap(&mut self.start_ms, &mut self.end_ms);
+        }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
+        }
+        // Clamp word timings inside the cue so a corrupt word can never make
+        // preview/export index outside the cue. Words keep their text;
+        // dropping is a separate explicit delete op, never a side effect.
+        self.words = self
+            .words
+            .into_iter()
+            .map(|word| {
+                let mut word = word.normalized();
+                word.start_ms = word
+                    .start_ms
+                    .clamp(self.start_ms, self.end_ms.saturating_sub(1));
+                if word.start_ms >= self.end_ms {
+                    word.start_ms = self.end_ms.saturating_sub(1);
+                }
+                word.end_ms = word
+                    .end_ms
+                    .clamp(word.start_ms.saturating_add(1), self.end_ms);
+                if word.end_ms <= word.start_ms {
+                    word.end_ms = word.start_ms.saturating_add(1).min(self.end_ms);
+                }
+                word
+            })
+            .collect();
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), RegionOpError> {
+        if self.id.trim().is_empty() {
+            return Err(RegionOpError::EmptyId);
+        }
+        validate_range(self.start_ms, self.end_ms)?;
+        Ok(())
+    }
 }
 
 /// Appearance shared by Pixi preview and the exporter. Preview and export
@@ -330,12 +513,42 @@ impl Default for Appearance {
     }
 }
 
+impl Appearance {
+    /// Total over NaN/inf/empty: empty backgrounds reset to the default so
+    /// preview/export never render transparent-black by accident; numeric
+    /// fields clamp; unknown aspect ratios reset to `None` (source).
+    pub fn normalized(mut self) -> Self {
+        if self.background.trim().is_empty() {
+            self.background = default_background();
+        }
+        self.padding = clamp_finite_or(self.padding, 0.0, 250.0, 48.0);
+        self.border_radius = clamp_finite_or(self.border_radius, 0.0, 100.0, 12.0);
+        self.shadow = clamp_finite_or(self.shadow, 0.0, 1.0, 0.35);
+        if let Some(ratio) = &self.aspect_ratio {
+            let canonical = ratio.trim().to_ascii_lowercase();
+            let valid = matches!(
+                canonical.as_str(),
+                "source" | "16:9" | "9:16" | "1:1" | "4:3"
+            );
+            if valid {
+                // Keep a canonical form (`Source` -> `source` is fine for the
+                // renderer contract; preview/export compare case-insensitively).
+                self.aspect_ratio = Some(canonical);
+            } else {
+                self.aspect_ratio = None;
+            }
+        }
+        self
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Annotations (Phase 2): text / figure / blur overlays
 // ---------------------------------------------------------------------------
 
-/// Annotation overlay kind. Mirrors Recordly `AnnotationType` restricted to
-/// the natively rendered set (image overlays arrive in a later slice).
+/// Annotation overlay kind. Mirrors Recordly `AnnotationType`. `Image` is
+/// preserved on load even though native image rendering arrives in a later
+/// slice, so opening a foreign project never drops user overlays.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AnnotationKind {
@@ -343,6 +556,7 @@ pub enum AnnotationKind {
     Text,
     Figure,
     Blur,
+    Image,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -488,7 +702,7 @@ pub struct AnnotationRegion {
     pub style: AnnotationTextStyle,
     #[serde(default)]
     pub z_index: i32,
-    #[serde(default)]
+    #[serde(default, alias = "figureData")]
     pub figure: Option<FigureData>,
     #[serde(default)]
     pub blur_intensity: Option<f64>,
@@ -498,6 +712,9 @@ impl AnnotationRegion {
     pub fn normalized(mut self) -> Self {
         if self.end_ms < self.start_ms {
             std::mem::swap(&mut self.start_ms, &mut self.end_ms);
+        }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
         }
         self.position.x = clamp_percent(self.position.x);
         self.position.y = clamp_percent(self.position.y);
@@ -540,7 +757,7 @@ pub struct AudioRegion {
     pub audio_path: String,
     #[serde(default = "default_audio_volume")]
     pub volume: f64,
-    #[serde(default)]
+    #[serde(default, alias = "normalize")]
     pub normalize_audio: bool,
     #[serde(default)]
     pub track_index: Option<u32>,
@@ -554,6 +771,9 @@ impl AudioRegion {
     pub fn normalized(mut self) -> Self {
         if self.end_ms < self.start_ms {
             std::mem::swap(&mut self.start_ms, &mut self.end_ms);
+        }
+        if self.end_ms <= self.start_ms {
+            self.end_ms = self.start_ms.saturating_add(1);
         }
         self.volume = clamp_finite_or(self.volume, 0.0, 1.0, 1.0);
         self
@@ -655,6 +875,7 @@ pub fn add_clip_region(
 /// Move a clip along the timeline, preserving duration and source in-point
 /// (a moved clip keeps reading from the same source offset, mirroring
 /// Recordly). Fails without mutating when the target overlaps a sibling.
+/// Saturating: extreme stored ranges never panic on overflow.
 pub fn move_clip_region(
     clips: &mut [ClipRegion],
     id: &str,
@@ -664,7 +885,7 @@ pub fn move_clip_region(
         .iter()
         .position(|clip| clip.id == id)
         .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
-    let duration = clips[index].end_ms - clips[index].start_ms;
+    let duration = clips[index].end_ms.saturating_sub(clips[index].start_ms);
     if duration <= 0 {
         let clip = &clips[index];
         return Err(RegionOpError::InvalidRange {
@@ -676,11 +897,20 @@ pub fn move_clip_region(
     if new_start_ms < 0 {
         return Err(RegionOpError::InvalidRange {
             start_ms: new_start_ms,
-            end_ms: new_start_ms + duration,
+            end_ms: new_start_ms.saturating_add(duration),
             reason: "timestamps must be non-negative".into(),
         });
     }
-    let new_end_ms = new_start_ms + duration;
+    let new_end_ms = new_start_ms.saturating_add(duration);
+    // Saturating_add can pin `new_end_ms` to i64::MAX; that still counts as a
+    // range, but it must not silently overlap-check with wrapped values.
+    if new_end_ms <= new_start_ms {
+        return Err(RegionOpError::InvalidRange {
+            start_ms: new_start_ms,
+            end_ms: new_end_ms,
+            reason: "move target overflows the timeline".into(),
+        });
+    }
     if clips.iter().enumerate().any(|(other_index, clip)| {
         other_index != index && ranges_overlap(new_start_ms, new_end_ms, clip.start_ms, clip.end_ms)
     }) {
@@ -718,8 +948,14 @@ pub fn split_clip_region(
     } else {
         1.0
     };
-    let right_source =
-        clip.source_start() + ((at_ms - clip.start_ms) as f64 * speed).round() as i64;
+    let elapsed = at_ms.saturating_sub(clip.start_ms) as f64;
+    let advance = (elapsed * speed).round();
+    let advance_i64 = if advance.is_finite() {
+        advance as i64
+    } else {
+        i64::MAX
+    };
+    let right_source = clip.source_start().saturating_add(advance_i64);
     let mut suffix = 1;
     let mut right_id = format!("{id}-b");
     while clips.iter().any(|existing| existing.id == right_id) {
@@ -775,8 +1011,14 @@ pub fn trim_clip_region(
     } else {
         1.0
     };
-    let new_source =
-        clip.source_start() + ((new_start_ms - clip.start_ms) as f64 * speed).round() as i64;
+    let elapsed = new_start_ms.saturating_sub(clip.start_ms) as f64;
+    let advance = (elapsed * speed).round();
+    let advance_i64 = if advance.is_finite() {
+        advance as i64
+    } else {
+        i64::MAX
+    };
+    let new_source = clip.source_start().saturating_add(advance_i64);
     clips[index].start_ms = new_start_ms;
     clips[index].end_ms = new_end_ms;
     clips[index].source_start_ms = Some(new_source.max(0));
@@ -810,6 +1052,146 @@ pub fn add_audio_region(
     regions.push(region.normalized());
     regions.sort_by_key(|item| item.start_ms);
     Ok(())
+}
+
+/// Delete a clip by id. Validates existence first so a missing id leaves the
+/// vec untouched; returns the removed clip so the UI can push an undo entry.
+pub fn delete_clip_region(
+    clips: &mut Vec<ClipRegion>,
+    id: &str,
+) -> Result<ClipRegion, RegionOpError> {
+    let index = clips
+        .iter()
+        .position(|clip| clip.id == id)
+        .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
+    Ok(clips.remove(index))
+}
+
+/// Add a zoom region after id/range validation. Zooms may overlap (the
+/// renderer smooths transitions), so no overlap check. Pushes normalized.
+pub fn add_zoom_region(
+    zooms: &mut Vec<ZoomRegion>,
+    region: ZoomRegion,
+) -> Result<(), RegionOpError> {
+    region.validate()?;
+    if zooms.iter().any(|item| item.id == region.id) {
+        return Err(RegionOpError::DuplicateId(region.id.clone()));
+    }
+    zooms.push(region.normalized());
+    zooms.sort_by_key(|item| item.start_ms);
+    Ok(())
+}
+
+/// Delete a zoom region by id. Validates first; returns the removed region
+/// for undo.
+pub fn delete_zoom_region(
+    zooms: &mut Vec<ZoomRegion>,
+    id: &str,
+) -> Result<ZoomRegion, RegionOpError> {
+    let index = zooms
+        .iter()
+        .position(|item| item.id == id)
+        .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
+    Ok(zooms.remove(index))
+}
+
+/// Add a trim region after id/range validation.
+pub fn add_trim_region(
+    trims: &mut Vec<TrimRegion>,
+    region: TrimRegion,
+) -> Result<(), RegionOpError> {
+    region.validate()?;
+    if trims.iter().any(|item| item.id == region.id) {
+        return Err(RegionOpError::DuplicateId(region.id.clone()));
+    }
+    trims.push(region.normalized());
+    trims.sort_by_key(|item| item.start_ms);
+    Ok(())
+}
+
+/// Delete a trim region by id; returns the removed region for undo.
+pub fn delete_trim_region(
+    trims: &mut Vec<TrimRegion>,
+    id: &str,
+) -> Result<TrimRegion, RegionOpError> {
+    let index = trims
+        .iter()
+        .position(|item| item.id == id)
+        .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
+    Ok(trims.remove(index))
+}
+
+/// Add a speed region after id/range/speed validation.
+pub fn add_speed_region(
+    speeds: &mut Vec<SpeedRegion>,
+    region: SpeedRegion,
+) -> Result<(), RegionOpError> {
+    region.validate()?;
+    if speeds.iter().any(|item| item.id == region.id) {
+        return Err(RegionOpError::DuplicateId(region.id.clone()));
+    }
+    speeds.push(region.normalized());
+    speeds.sort_by_key(|item| item.start_ms);
+    Ok(())
+}
+
+/// Delete a speed region by id; returns the removed region for undo.
+pub fn delete_speed_region(
+    speeds: &mut Vec<SpeedRegion>,
+    id: &str,
+) -> Result<SpeedRegion, RegionOpError> {
+    let index = speeds
+        .iter()
+        .position(|item| item.id == id)
+        .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
+    Ok(speeds.remove(index))
+}
+
+/// Add a caption cue after id/range validation.
+pub fn add_caption(captions: &mut Vec<CaptionCue>, cue: CaptionCue) -> Result<(), RegionOpError> {
+    cue.validate()?;
+    if captions.iter().any(|item| item.id == cue.id) {
+        return Err(RegionOpError::DuplicateId(cue.id.clone()));
+    }
+    captions.push(cue.normalized());
+    captions.sort_by_key(|item| item.start_ms);
+    Ok(())
+}
+
+/// Delete a caption cue by id; returns the removed cue for undo.
+pub fn delete_caption(
+    captions: &mut Vec<CaptionCue>,
+    id: &str,
+) -> Result<CaptionCue, RegionOpError> {
+    let index = captions
+        .iter()
+        .position(|item| item.id == id)
+        .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
+    Ok(captions.remove(index))
+}
+
+/// Delete an annotation by id; returns the removed region for undo.
+pub fn delete_annotation(
+    annotations: &mut Vec<AnnotationRegion>,
+    id: &str,
+) -> Result<AnnotationRegion, RegionOpError> {
+    let index = annotations
+        .iter()
+        .position(|item| item.id == id)
+        .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
+    Ok(annotations.remove(index))
+}
+
+/// Delete a detached audio region by id; returns the removed region for undo.
+pub fn delete_audio_region(
+    regions: &mut Vec<AudioRegion>,
+    id: &str,
+) -> Result<AudioRegion, RegionOpError> {
+    let index = regions
+        .iter()
+        .position(|item| item.id == id)
+        .ok_or_else(|| RegionOpError::NotFound(id.into()))?;
+    Ok(regions.remove(index))
 }
 
 // ---------------------------------------------------------------------------
@@ -861,12 +1243,16 @@ pub fn suggest_zoom_regions(samples: &[CursorSample], total_ms: i64) -> Vec<Zoom
     clicks.sort_by_key(|click| click.0);
 
     // Cluster consecutive clicks separated by at most the merge gap.
+    // Saturating subtraction: corrupt telemetry with i64::MIN/MAX must never
+    // panic on overflow.
     let mut clusters: Vec<Vec<(i64, f64, f64)>> = Vec::new();
     for click in clicks {
         let extend = clusters
             .last()
             .is_some_and(|cluster: &Vec<(i64, f64, f64)>| {
-                click.0 - cluster.last().map_or(click.0, |last| last.0)
+                click
+                    .0
+                    .saturating_sub(cluster.last().map_or(click.0, |last| last.0))
                     <= CLICK_CLUSTER_MERGE_GAP_MS
             });
         if extend {
@@ -882,8 +1268,8 @@ pub fn suggest_zoom_regions(samples: &[CursorSample], total_ms: i64) -> Vec<Zoom
     for (index, cluster) in clusters.iter().enumerate() {
         let first = cluster.first().map_or(0, |click| click.0);
         let last = cluster.last().map_or(0, |click| click.0);
-        let start_ms = (first - CLICK_CLUSTER_PAD_MS).max(0);
-        let end_ms = (last + CLICK_CLUSTER_PAD_MS).min(total_ms);
+        let start_ms = first.saturating_sub(CLICK_CLUSTER_PAD_MS).max(0);
+        let end_ms = last.saturating_add(CLICK_CLUSTER_PAD_MS).min(total_ms);
         if end_ms <= start_ms {
             continue;
         }
@@ -962,13 +1348,27 @@ impl Default for EditorState {
 }
 
 impl EditorState {
-    /// Clamp every field into its valid range and drop nothing silently
-    /// except inverted ranges, which are repaired by swapping. Total: never
-    /// panics, even on NaN/infinite inputs.
+    /// Clamp every field into its valid range. Total: never panics, even on
+    /// NaN/infinite/negative/inverted inputs. Inverted ranges are repaired by
+    /// swapping (plus a 1ms minimum duration); numeric fields clamp to their
+    /// documented ranges with deterministic fallbacks. Idempotent:
+    /// `normalized(normalized(x)) == normalized(x)`.
     pub fn normalized(mut self) -> Self {
         self.version = EDITOR_SCHEMA_VERSION;
+        self.appearance = self.appearance.normalized();
         self.zooms = self.zooms.into_iter().map(ZoomRegion::normalized).collect();
         self.clips = self.clips.into_iter().map(ClipRegion::normalized).collect();
+        self.trims = self.trims.into_iter().map(TrimRegion::normalized).collect();
+        self.speeds = self
+            .speeds
+            .into_iter()
+            .map(SpeedRegion::normalized)
+            .collect();
+        self.captions = self
+            .captions
+            .into_iter()
+            .map(CaptionCue::normalized)
+            .collect();
         self.annotations = self
             .annotations
             .into_iter()
@@ -979,11 +1379,7 @@ impl EditorState {
             .into_iter()
             .map(AudioRegion::normalized)
             .collect();
-        self.webcam.position_x = clamp01(self.webcam.position_x);
-        self.webcam.position_y = clamp01(self.webcam.position_y);
-        self.webcam.size = clamp_finite_or(self.webcam.size, 0.05, 1.0, 0.25);
-        self.webcam.roundness = clamp_finite_or(self.webcam.roundness, 0.0, 1.0, 0.2);
-        self.webcam.shadow = clamp_finite_or(self.webcam.shadow, 0.0, 1.0, 0.4);
+        self.webcam = self.webcam.normalized();
         self
     }
 }
