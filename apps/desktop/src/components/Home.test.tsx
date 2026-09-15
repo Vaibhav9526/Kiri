@@ -10,6 +10,7 @@ vi.mock('@/ipc/client', () => ({
   recoverRecording: vi.fn(),
   createProject: vi.fn(),
   openProject: vi.fn(),
+  setActiveProject: vi.fn().mockResolvedValue(undefined),
 }));
 describe('Home', () => {
   it('renders the launch hierarchy and honest phase availability', async () => {
@@ -22,7 +23,7 @@ describe('Home', () => {
     expect(screen.getByRole('button', { name: /New Kiri Project/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: /New Manual Recording/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: /New AI Walkthrough/ })).toHaveTextContent(
-      'Unavailable until Phase 4',
+      /unavailable until Phase 4/i,
     );
     expect(await screen.findByText('No local projects yet')).toBeInTheDocument();
   });

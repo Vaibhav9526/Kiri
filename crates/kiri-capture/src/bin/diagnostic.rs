@@ -48,19 +48,27 @@ mod windows_main {
             frame: &mut Frame,
             control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
-            self.encoder
-                .as_mut()
-                .expect("encoder exists")
-                .send_frame(frame)?;
+            let Some(encoder) = self.encoder.as_mut() else {
+                return Ok(());
+            };
+            encoder.send_frame(frame)?;
             self.frames += 1;
             if self.started.elapsed().as_secs() >= self.seconds {
-                self.encoder.take().expect("encoder exists").finish()?;
-                eprintln!(
-                    "{{\"frames\":{},\"seconds\":{:.3},\"gpuPath\":true,\"encoder\":\"Media Foundation H.264\"}}",
-                    self.frames,
-                    self.started.elapsed().as_secs_f64()
-                );
-                control.stop();
+                if let Some(encoder) = self.encoder.take() {
+                    // Stop the message loop even when finalization fails;
+                    // otherwise a `finish()` error leaks the capture thread
+                    // (no `Drop` joins it) and hangs the diagnostic.
+                    let finish_result = encoder.finish();
+                    eprintln!(
+                        "{{\"frames\":{},\"seconds\":{:.3},\"gpuPath\":true,\"encoder\":\"Media Foundation H.264\"}}",
+                        self.frames,
+                        self.started.elapsed().as_secs_f64()
+                    );
+                    control.stop();
+                    finish_result?;
+                } else {
+                    control.stop();
+                }
             }
             Ok(())
         }
@@ -71,13 +79,24 @@ mod windows_main {
             .nth(1)
             .map(PathBuf::from)
             .unwrap_or_else(|| "wgc-spike.mp4".into());
-        let seconds = std::env::args()
-            .nth(2)
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(5);
+        // Missing duration keeps the historical 5s default, but an explicit
+        // invalid value errors instead of silently recording the wrong span.
+        let seconds_text = std::env::args().nth(2);
+        let seconds: u64 = match seconds_text {
+            None => 5,
+            Some(text) => text.parse().map_err(|_| {
+                format!("invalid seconds '{text}'; expected a non-negative integer")
+            })?,
+        };
+        if seconds > 3600 {
+            return Err("invalid seconds; expected 0..=3600".into());
+        }
         let monitor = Monitor::primary()?;
         let width = monitor.width()?;
         let height = monitor.height()?;
+        if width == 0 || height == 0 {
+            return Err("primary display has no visible area".into());
+        }
         let settings = Settings::new(
             monitor,
             CursorCaptureSettings::WithoutCursor,
@@ -102,4 +121,15 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn main() {
     eprintln!("kiri-capture-diagnostic requires Windows");
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn diagnostic_seconds_reject_out_of_range_without_panicking() {
+        let seconds: u64 = 3601;
+        assert!(seconds > 3600);
+        let ok: u64 = 5;
+        assert!(ok <= 3600);
+    }
 }

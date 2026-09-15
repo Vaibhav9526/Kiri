@@ -1,15 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
 import {
+  allSettingsSchema,
   audioDeviceSchema,
   audioMeterSchema,
   cameraDeviceSchema,
   captureSourceSchema,
+  editorStateSchema,
   projectSummarySchema,
   recoveryCandidateSchema,
+  type AllSettings,
   type AudioDevice,
   type AudioMeter,
   type CameraDevice,
   type CaptureSource,
+  type EditorState,
   recordingStatusSchema,
   stopRecordingResultSchema,
   type RecordingStatus,
@@ -74,4 +78,61 @@ export async function listRecoverableRecordings(): Promise<RecoveryCandidate[]> 
 }
 export async function recoverRecording(projectPath: string): Promise<ProjectSummary> {
   return projectSummarySchema.parse(await invoke('recover_recording', { projectPath }));
+}
+// Backend-held session state shared across windows (Recordly keeps the
+// selected source/project in the main process; webviews share no storage).
+export async function setActiveProject(path: string): Promise<void> {
+  if (!isTauri()) {
+    localStorage.setItem('kiri.captureProjectPath', path);
+    return;
+  }
+  await invoke('set_active_project', { path });
+  localStorage.setItem('kiri.captureProjectPath', path);
+}
+export async function getActiveProject(): Promise<string> {
+  const fallback = localStorage.getItem('kiri.captureProjectPath') ?? '';
+  if (!isTauri()) return fallback;
+  const value = await invoke<string | null>('get_active_project');
+  if (value) {
+    localStorage.setItem('kiri.captureProjectPath', value);
+    return value;
+  }
+  return fallback;
+}
+export async function setSelectedSource(sourceId: string): Promise<void> {
+  if (!isTauri()) {
+    localStorage.setItem('kiri.selectedSource', sourceId);
+    return;
+  }
+  await invoke('set_selected_source', { sourceId });
+  localStorage.setItem('kiri.selectedSource', sourceId);
+}
+export async function getSelectedSource(): Promise<string> {
+  const fallback = localStorage.getItem('kiri.selectedSource') ?? '';
+  if (!isTauri()) return fallback;
+  const value = await invoke<string | null>('get_selected_source');
+  return value ?? fallback;
+}
+export async function getPlatform(): Promise<string> {
+  if (!isTauri()) return 'browser';
+  return invoke<string>('get_platform');
+}
+export async function getAllSettings(): Promise<AllSettings | null> {
+  if (!isTauri()) return null;
+  return allSettingsSchema.parse(await invoke('get_all_settings'));
+}
+export async function saveAllSettings(settings: AllSettings): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('save_all_settings', { settings });
+}
+export async function getEditorState(projectPath: string): Promise<EditorState | null> {
+  if (!isTauri()) return null;
+  return editorStateSchema.parse(await invoke('get_editor_state', { projectPath }));
+}
+export async function saveEditorState(
+  projectPath: string,
+  editor: EditorState,
+): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('save_editor_state', { projectPath, editor });
 }

@@ -47,6 +47,42 @@
         "transparent": true,
         "decorations": false,
         "visible": false
+      },
+      {
+        "label": "countdown",
+        "title": "Recording starts shortly",
+        "url": "index.html?window=countdown",
+        "width": 320,
+        "height": 200,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "decorations": false,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "hud-overlay",
+        "title": "Kiri HUD",
+        "url": "index.html?window=hud-overlay",
+        "fullscreen": true,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false
+      },
+      {
+        "label": "editor",
+        "title": "Kiri Editor",
+        "url": "index.html?window=editor",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

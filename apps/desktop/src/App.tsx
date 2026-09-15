@@ -1,5 +1,8 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { CountdownOverlay } from '@/components/CountdownOverlay';
+import { EditorShell } from '@/components/EditorShell';
 import { Home } from '@/components/Home';
+import { HudOverlay } from '@/components/HudOverlay';
 import { RecordingController } from '@/components/RecordingController';
 import { SourceSelector } from '@/components/SourceSelector';
 import { useEffect } from 'react';
@@ -25,6 +28,12 @@ export function App() {
       return <SourceSelector />;
     case 'recording-controller':
       return <RecordingController />;
+    case 'countdown':
+      return <CountdownOverlay />;
+    case 'hud-overlay':
+      return <HudOverlay />;
+    case 'editor':
+      return <EditorShell />;
     default:
       return <Home />;
   }

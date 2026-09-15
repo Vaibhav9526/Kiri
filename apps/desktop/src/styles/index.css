@@ -850,7 +850,7 @@ button:disabled {
   padding: 0 14px;
   border: 0;
   border-radius: 8px;
-  background: var(--primary-gradient);
+  background: var(--gradient-primary);
   color: #fff;
   font-size: 11px;
   font-weight: 700;
@@ -982,4 +982,478 @@ button:disabled {
   height: 100%;
   border-radius: 5px;
   object-fit: cover;
+}
+
+/* Recordly-derived launch/HUD theme, remapped onto Kiri tokens. Keeps Kiri
+   branding (primary gradient, compact Tauri window sizes) while matching
+   Recordly's pill bar, popover, countdown card, and meter language. */
+.launch-theme {
+  color: var(--launch-text);
+}
+.kiri-hud-bar {
+  background: var(--launch-bar-bg);
+  border: 1px solid var(--launch-bar-border);
+  box-shadow: var(--launch-bar-shadow);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+.controller-shell {
+  gap: 7px;
+  padding: 5px 10px 5px 12px;
+  border-radius: 20px;
+  background: var(--launch-bar-bg);
+  border: 1px solid var(--launch-bar-border);
+  box-shadow: var(--launch-bar-shadow);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+.record-state {
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+.controller-shell.is-recording .record-state {
+  color: #f43f5e;
+}
+.controller-shell.is-paused .record-state {
+  color: var(--warning);
+}
+.controller-shell.is-idle .record-state {
+  color: var(--muted-foreground);
+}
+.record-dot {
+  width: 7px;
+  height: 7px;
+}
+.controller-shell.is-paused .record-dot {
+  background: var(--warning);
+}
+.controller-shell.is-idle .record-dot {
+  background: var(--muted-foreground);
+}
+.timer {
+  min-width: 52px;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.controller-shell.is-paused .timer {
+  color: var(--warning);
+}
+.controller-shell button {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.controller-shell button:hover:not(:disabled) {
+  background: var(--launch-hover);
+  color: var(--foreground);
+}
+.controller-shell button.is-active {
+  color: var(--accent);
+}
+.controller-shell button.is-green {
+  background: var(--success);
+  color: #fff;
+}
+.controller-shell button.is-green:hover:not(:disabled) {
+  background: var(--success);
+  filter: brightness(1.1);
+  color: #fff;
+}
+.controller-shell .stop-button {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #f43f5e;
+  color: #fff;
+  border: 0;
+  box-shadow: 0 0 0 0 rgb(244 63 94 / 0.3);
+}
+.controller-shell .stop-button:hover:not(:disabled) {
+  background: #ff5a75;
+  box-shadow: 0 0 0 5px rgb(244 63 94 / 0.16);
+  color: #fff;
+}
+.controller-shell .stop-button svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+.mic-state {
+  width: 32px;
+  height: 32px;
+  border-radius: 11px;
+  opacity: 0.75;
+}
+.controller-status {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+.controller-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.finalizing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.finalizing-row small {
+  display: block;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.spin {
+  animation: kiri-spin 0.9s linear infinite;
+}
+@keyframes kiri-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Countdown: Recordly centers a 180px blurred card; Kiri reuses it both for
+   the inline capture-setup overlay and the standalone 320x200 window. */
+.countdown-overlay {
+  background: color-mix(in srgb, var(--background) 72%, transparent);
+}
+.countdown-card {
+  width: 180px;
+  height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 24px;
+  background: rgb(0 0 0 / 0.85);
+  color: #fff;
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-floating);
+  cursor: pointer;
+  border: 1px solid rgb(255 255 255 / 0.1);
+}
+.countdown-card > span {
+  font-size: 100px;
+  line-height: 1;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 30px rgb(255 255 255 / 0.2);
+}
+.countdown-card > small {
+  font-size: 11px;
+  color: rgb(255 255 255 / 0.72);
+}
+.countdown-window {
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  background: transparent;
+}
+
+/* HUD overlay: fullscreen transparent click-through surface with a bottom
+   pill reflecting live status. Controls stay in the controller window. */
+.hud-overlay {
+  height: 100vh;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 20px;
+  background: transparent;
+  pointer-events: none;
+}
+.hud-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--launch-bar-bg);
+  border: 1px solid var(--launch-bar-border);
+  box-shadow: var(--launch-bar-shadow);
+  backdrop-filter: blur(20px) saturate(160%);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+}
+.hud-pill .hud-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-foreground);
+}
+.hud-pill.is-recording {
+  color: #f43f5e;
+}
+.hud-pill.is-recording .hud-dot {
+  background: #f43f5e;
+  animation: record-pulse 1.2s ease-in-out infinite;
+}
+.hud-pill.is-paused {
+  color: var(--warning);
+}
+.hud-pill.is-paused .hud-dot {
+  background: var(--warning);
+}
+.hud-pill .hud-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  color: var(--foreground);
+  letter-spacing: 0.02em;
+}
+.hud-pill.is-recording .hud-time,
+.hud-pill.is-paused .hud-time {
+  color: inherit;
+}
+
+/* Source selector: Recordly groups Displays/Windows with thumbnails,
+   marquee titles, and a refreshing indicator. */
+.source-group-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+}
+.source-group-label .refreshing {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.source-group-label .refreshing.is-visible {
+  opacity: 1;
+}
+.source-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-item:hover .source-title.is-overflowing {
+  animation: kiri-marquee 8s linear infinite;
+}
+@keyframes kiri-marquee {
+  0%,
+  15% {
+    transform: translateX(0);
+  }
+  85%,
+  100% {
+    transform: translateX(-40%);
+  }
+}
+.source-empty {
+  margin: 12px;
+  padding: 22px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  text-align: center;
+  color: var(--muted-foreground);
+}
+.source-empty strong {
+  display: block;
+  color: var(--foreground);
+  font-size: 12px;
+}
+.source-empty p {
+  margin: 5px 0 10px;
+  font-size: 11px;
+}
+.source-empty button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.audio-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 20px;
+}
+.audio-bars > span {
+  width: 5px;
+  border-radius: 2px;
+  background: var(--border);
+  transition:
+    height 100ms ease,
+    background-color 100ms ease;
+}
+.audio-bars > span.is-lit-low {
+  background: var(--accent);
+}
+.audio-bars > span.is-lit-mid {
+  background: var(--primary);
+}
+.audio-bars > span.is-lit-high {
+  background: var(--warning);
+}
+.audio-bars > span.is-lit-peak {
+  background: var(--danger);
+}
+.audio-bars.is-clipped > span {
+  background: var(--danger);
+}
+.meter-row {
+  gap: 8px;
+}
+.device-empty-option {
+  color: var(--muted-foreground);
+}
+.project-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.project-picker-row select {
+  max-width: 220px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--foreground);
+  font-size: 11px;
+}
+
+/* Editor rail: keep AI/MCP visibly disabled with honest later-phase badges. */
+.editor-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+}
+.editor-topbar {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.editor-topbar span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.editor-body {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr) 280px;
+}
+.editor-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+.editor-rail button {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.editor-rail button:hover:not(:disabled) {
+  background: var(--surface-raised);
+}
+.editor-rail button[aria-pressed='true'] {
+  background: var(--muted);
+  border-color: var(--border);
+}
+.later-badge {
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  background: var(--surface-raised);
+}
+.editor-canvas {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: var(--canvas);
+}
+.canvas-placeholder {
+  max-width: 420px;
+  text-align: center;
+  padding: 28px 22px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.canvas-placeholder p {
+  margin: 0;
+  font-weight: 650;
+}
+.canvas-placeholder small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted-foreground);
+}
+.editor-inspector {
+  padding: 14px;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  overflow: auto;
+}
+.editor-inspector h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.editor-inspector p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.editor-timeline {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-top: 1px solid var(--border);
+  background: var(--timeline);
+  color: var(--muted-foreground);
+  font-size: 12px;
 }
