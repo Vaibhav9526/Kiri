@@ -14,9 +14,19 @@ use thiserror::Error;
 pub enum AudioError {
     #[error("WASAPI is only available on Windows")]
     Unsupported,
+    #[error("microphone unavailable: {0}")]
+    MicrophoneUnavailable(String),
+    #[error("system audio loopback unavailable: {0}")]
+    LoopbackUnavailable(String),
+    #[error("timed out waiting for audio capture to start: {0}")]
+    StartTimeout(String),
     #[error("audio device failed: {0}")]
     Device(String),
 }
+
+/// How long `start_recording` waits for the capture thread to signal readiness,
+/// mirroring Recordly's 12s native-capture start timeout.
+pub const AUDIO_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -186,12 +196,69 @@ pub struct AudioRecordingHandle {
 impl AudioRecordingHandle {
     pub fn stop(mut self) -> Result<u64, AudioError> {
         self.stop.store(true, Ordering::Release);
-        self.thread
-            .take()
-            .expect("audio thread exists")
+        let Some(thread) = self.thread.take() else {
+            return Err(AudioError::Device(
+                "audio capture thread was already stopped".into(),
+            ));
+        };
+        thread
             .join()
-            .map_err(|_| AudioError::Device("audio capture thread panicked".into()))?
+            .unwrap_or_else(|_| Err(AudioError::Device("audio capture thread panicked".into())))
     }
+}
+
+impl Drop for AudioRecordingHandle {
+    fn drop(&mut self) {
+        // Best-effort signal so a dropped-but-unstopped handle (e.g. a failed
+        // `start_segment` that forgot a path) does not leave WASAPI streaming
+        // forever. The detached thread observes the flag and exits.
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+/// Preflight check with actionable messages for the Tauri layer. Verifies the
+/// requested device still exists before any file is created.
+#[cfg(windows)]
+pub fn check_device_available(
+    kind: AudioSourceKind,
+    device_id: Option<&str>,
+) -> Result<(), AudioError> {
+    let devices = enumerate_devices()?;
+    match kind {
+        AudioSourceKind::Microphone => {
+            let Some(wanted) = device_id else {
+                return Ok(());
+            };
+            if devices
+                .iter()
+                .any(|d| d.kind == AudioSourceKind::Microphone && d.id == wanted)
+            {
+                Ok(())
+            } else {
+                Err(AudioError::MicrophoneUnavailable(format!(
+                    "microphone '{wanted}' was unplugged or disabled; reconnect it or pick another microphone"
+                )))
+            }
+        }
+        AudioSourceKind::SystemLoopback => {
+            if devices
+                .iter()
+                .any(|d| d.kind == AudioSourceKind::SystemLoopback)
+            {
+                Ok(())
+            } else {
+                Err(AudioError::LoopbackUnavailable(
+                    "no system-audio output device found; check Windows sound settings or turn system audio off"
+                        .into(),
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn check_device_available(_: AudioSourceKind, _: Option<&str>) -> Result<(), AudioError> {
+    Err(AudioError::Unsupported)
 }
 
 #[cfg(windows)]
@@ -200,6 +267,10 @@ pub fn start_recording(
     device_id: Option<String>,
     path: PathBuf,
 ) -> Result<AudioRecordingHandle, AudioError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| friendly_error(kind, format!("cannot create output folder: {e}")))?;
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
@@ -207,17 +278,40 @@ pub fn start_recording(
         .name(format!("kiri-audio-{kind:?}"))
         .spawn(move || capture_wav(kind, device_id, path, thread_stop, ready_tx))
         .map_err(|e| AudioError::Device(e.to_string()))?;
-    if ready_rx.recv().is_err() {
-        return Err(thread
-            .join()
-            .map_err(|_| AudioError::Device("audio capture thread panicked".into()))?
-            .err()
-            .unwrap_or_else(|| AudioError::Device("audio capture ended before ready".into())));
+    match ready_rx.recv_timeout(AUDIO_START_TIMEOUT) {
+        Ok(()) => Ok(AudioRecordingHandle {
+            stop,
+            thread: Some(thread),
+        }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            stop.store(true, Ordering::Release);
+            let _ = thread.join();
+            Err(AudioError::StartTimeout(format!(
+                "{} capture did not start within {}s; the device may be in use by another app",
+                match kind {
+                    AudioSourceKind::Microphone => "microphone",
+                    AudioSourceKind::SystemLoopback => "system audio",
+                },
+                AUDIO_START_TIMEOUT.as_secs()
+            )))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let inner = thread
+                .join()
+                .unwrap_or_else(|_| Err(AudioError::Device("audio capture thread panicked".into())))
+                .err()
+                .unwrap_or_else(|| friendly_error(kind, "audio capture ended before ready"));
+            Err(inner)
+        }
     }
-    Ok(AudioRecordingHandle {
-        stop,
-        thread: Some(thread),
-    })
+}
+
+fn friendly_error(kind: AudioSourceKind, message: impl Into<String>) -> AudioError {
+    let message = message.into();
+    match kind {
+        AudioSourceKind::Microphone => AudioError::MicrophoneUnavailable(message),
+        AudioSourceKind::SystemLoopback => AudioError::LoopbackUnavailable(message),
+    }
 }
 
 #[cfg(not(windows))]
@@ -246,11 +340,24 @@ fn capture_wav(
         AudioSourceKind::Microphone => Direction::Capture,
         AudioSourceKind::SystemLoopback => Direction::Render,
     };
-    let device = match device_id {
+    let device = match device_id.clone() {
         Some(id) => enumerator.get_device(&id),
         None => enumerator.get_default_device(&endpoint_direction),
     }
-    .map_err(|e| AudioError::Device(e.to_string()))?;
+    .map_err(|e| {
+        friendly_error(
+            kind,
+            match kind {
+                AudioSourceKind::Microphone => format!(
+                    "microphone '{}' could not be opened ({e}); it may have been unplugged",
+                    device_id.as_deref().unwrap_or("default")
+                ),
+                AudioSourceKind::SystemLoopback => format!(
+                    "system audio loopback could not be opened ({e}); check Windows sound settings"
+                ),
+            },
+        )
+    })?;
     let mut client = device
         .get_iaudioclient()
         .map_err(|e| AudioError::Device(e.to_string()))?;
@@ -291,16 +398,38 @@ fn capture_wav(
         .map_err(|e| AudioError::Device(e.to_string()))?;
     let _ = ready.send(());
     while !stop.load(Ordering::Acquire) {
-        capture
-            .read_from_device_to_deque(&mut bytes)
-            .map_err(|e| AudioError::Device(e.to_string()))?;
+        if let Err(e) = capture.read_from_device_to_deque(&mut bytes) {
+            // Finalize the partial WAV so the segment stays playable for
+            // recovery (Recordly keeps sidecars the same way), then report a
+            // disconnect with an actionable message.
+            let _ = client.stop_stream();
+            let _ = writer.finalize();
+            return Err(friendly_error(
+                kind,
+                match kind {
+                    AudioSourceKind::Microphone => format!(
+                        "microphone disconnected during recording ({e}); audio after this point is missing"
+                    ),
+                    AudioSourceKind::SystemLoopback => {
+                        format!("system audio device disconnected during recording ({e})")
+                    }
+                },
+            ));
+        }
         while bytes.len() >= 4 {
-            let sample = f32::from_le_bytes([
-                bytes.pop_front().expect("length checked"),
-                bytes.pop_front().expect("length checked"),
-                bytes.pop_front().expect("length checked"),
-                bytes.pop_front().expect("length checked"),
-            ]);
+            let b0 = bytes
+                .pop_front()
+                .ok_or_else(|| AudioError::Device("audio packet was truncated".into()))?;
+            let b1 = bytes
+                .pop_front()
+                .ok_or_else(|| AudioError::Device("audio packet was truncated".into()))?;
+            let b2 = bytes
+                .pop_front()
+                .ok_or_else(|| AudioError::Device("audio packet was truncated".into()))?;
+            let b3 = bytes
+                .pop_front()
+                .ok_or_else(|| AudioError::Device("audio packet was truncated".into()))?;
+            let sample = f32::from_le_bytes([b0, b1, b2, b3]);
             writer
                 .write_sample(sample)
                 .map_err(|e| AudioError::Device(e.to_string()))?;

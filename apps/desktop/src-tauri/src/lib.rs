@@ -46,6 +46,10 @@ enum CommandError {
     InvalidPath(String),
     #[error("recording failed: {0}")]
     Recording(String),
+    #[error("export failed: {0}")]
+    Export(String),
+    #[error("editor op failed: {0}")]
+    Editor(String),
 }
 impl Serialize for CommandError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -120,6 +124,93 @@ struct ActiveRecording {
     diagnostics: CaptureDiagnostics,
 }
 
+// --- Recording orchestration helpers --------------------------------------
+// Recordly keeps recording state in the main process with explicit
+// availability checks, best-effort teardown, and interruption events. The
+// helpers below bring the same shape to the Rust host without changing the
+// `.kiri` layout or the Tauri command names the frontend already calls.
+
+fn lock_recording<'a>(
+    state: &'a State<'_, AppState>,
+) -> Result<std::sync::MutexGuard<'a, Option<ActiveRecording>>, CommandError> {
+    state.recording.lock().map_err(|_| {
+        CommandError::Recording("internal state unavailable: recording lock is corrupted".into())
+    })
+}
+
+fn lock_database<'a>(
+    state: &'a State<'_, AppState>,
+) -> Result<std::sync::MutexGuard<'a, Database>, CommandError> {
+    state.database.lock().map_err(|_| {
+        CommandError::Recording("internal state unavailable: database lock is corrupted".into())
+    })
+}
+
+fn validate_start_request(request: &StartRecordingRequest) -> Result<(), CommandError> {
+    if !matches!(request.fps, 30 | 60) {
+        return Err(CommandError::Recording(
+            "unsupported frame rate; choose 30 or 60 fps in recording settings".into(),
+        ));
+    }
+    if request.source_id.trim().is_empty() {
+        return Err(CommandError::Recording(
+            "no capture source selected; pick a display or window".into(),
+        ));
+    }
+    if request.project_path.extension().and_then(|v| v.to_str()) != Some("kiri") {
+        return Err(CommandError::Recording(
+            "project path must point at a .kiri project folder".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Fail fast with actionable messages before any file or device is touched.
+/// Mirrors Recordly's availability phase (source + mic/camera/loopback).
+fn preflight_request(request: &StartRecordingRequest) -> Result<(), CommandError> {
+    validate_start_request(request)?;
+    kiri_capture::windows::validate_source_for_capture(&request.source_id)
+        .map_err(|e| CommandError::Recording(e.to_string()))?;
+    if let Some(id) = request.microphone_id.as_deref() {
+        kiri_audio::check_device_available(AudioSourceKind::Microphone, Some(id))
+            .map_err(|e| CommandError::Recording(e.to_string()))?;
+    }
+    if request.system_audio {
+        kiri_audio::check_device_available(AudioSourceKind::SystemLoopback, None)
+            .map_err(|e| CommandError::Recording(e.to_string()))?;
+    }
+    if let Some(id) = request.camera_id.as_deref() {
+        kiri_camera::check_device_available(id)
+            .map_err(|e| CommandError::Recording(e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn push_device_event(active: &mut ActiveRecording, event: impl Into<String>) {
+    let event = event.into();
+    if !active.diagnostics.device_events.iter().any(|e| e == &event) {
+        active.diagnostics.device_events.push(event);
+    }
+}
+
+/// Best-effort stop of one handle: returns the error message instead of
+/// failing the whole segment, so remaining tracks are still finalized.
+fn stop_screen(handle: ScreenRecordingHandle, active: &mut ActiveRecording) -> Option<String> {
+    match handle.stop() {
+        Ok((frames, dropped, duration)) => {
+            active.diagnostics.encoded_frames += frames;
+            active.diagnostics.dropped_frames += dropped;
+            active.diagnostics.source_fps = if duration > 0.0 {
+                frames as f64 / duration
+            } else {
+                0.0
+            };
+            None
+        }
+        Err(e) => Some(format!("screen capture stop failed: {e}")),
+    }
+}
+
 fn safe_project_name(title: &str) -> Result<String, CommandError> {
     let value: String = title
         .trim()
@@ -157,11 +248,7 @@ fn create_project(
         .parent
         .join(format!("{}.kiri", safe_project_name(&request.title)?));
     let manifest = create_project_domain(&root, &request.title)?;
-    state
-        .database
-        .lock()
-        .expect("database mutex poisoned")
-        .upsert_recent(&manifest.id.to_string(), &manifest.title, &root)?;
+    lock_database(&state)?.upsert_recent(&manifest.id.to_string(), &manifest.title, &root)?;
     Ok(summary(&root, &manifest))
 }
 
@@ -171,52 +258,42 @@ fn open_project(
     state: State<'_, AppState>,
 ) -> Result<ProjectSummary, CommandError> {
     let manifest = open_project_domain(&request.path)?;
-    state
-        .database
-        .lock()
-        .expect("database mutex poisoned")
-        .upsert_recent(&manifest.id.to_string(), &manifest.title, &request.path)?;
+    lock_database(&state)?.upsert_recent(
+        &manifest.id.to_string(),
+        &manifest.title,
+        &request.path,
+    )?;
     Ok(summary(&request.path, &manifest))
+}
+
+fn lock_session<'a>(
+    state: &'a State<'_, AppState>,
+) -> Result<std::sync::MutexGuard<'a, SessionState>, CommandError> {
+    state.session.lock().map_err(|_| {
+        CommandError::Recording("internal state unavailable: session lock is corrupted".into())
+    })
 }
 
 #[tauri::command]
 fn set_active_project(path: PathBuf, state: State<'_, AppState>) -> Result<(), CommandError> {
-    state
-        .session
-        .lock()
-        .expect("session mutex poisoned")
-        .active_project = Some(path);
+    lock_session(&state)?.active_project = Some(path);
     Ok(())
 }
 
 #[tauri::command]
 fn get_active_project(state: State<'_, AppState>) -> Option<PathBuf> {
-    state
-        .session
-        .lock()
-        .expect("session mutex poisoned")
-        .active_project
-        .clone()
+    state.session.lock().ok()?.active_project.clone()
 }
 
 #[tauri::command]
 fn set_selected_source(source_id: String, state: State<'_, AppState>) -> Result<(), CommandError> {
-    state
-        .session
-        .lock()
-        .expect("session mutex poisoned")
-        .selected_source = Some(source_id);
+    lock_session(&state)?.selected_source = Some(source_id);
     Ok(())
 }
 
 #[tauri::command]
 fn get_selected_source(state: State<'_, AppState>) -> Option<String> {
-    state
-        .session
-        .lock()
-        .expect("session mutex poisoned")
-        .selected_source
-        .clone()
+    state.session.lock().ok()?.selected_source.clone()
 }
 
 #[tauri::command]
@@ -276,12 +353,142 @@ fn plan_export(
     kiri_export::plan_export(&request).map_err(|e| CommandError::Recording(e.to_string()))
 }
 
+// --- Phase 2/3 scaffolding commands (additive, thin wrappers) ----------------
+// These expose the pure backend helpers added for editor+export (Phase 2)
+// and presentation intelligence (Phase 3, rule-based only) without touching
+// recording flows or the frontend.
+
+/// Delivery bitrate preview for a preset/fps/mode triple (pure).
+#[tauri::command]
+fn export_target_bitrate(
+    preset: kiri_export::ExportPreset,
+    fps: u32,
+    mode: kiri_export::EncodingMode,
+) -> u32 {
+    kiri_export::target_bitrate_bps(preset, fps, mode)
+}
+
+/// Parse one ffmpeg output line into a progress event (pure, no I/O).
+#[tauri::command]
+fn parse_ffmpeg_progress_line(line: String) -> Option<kiri_export::FfmpegProgressEvent> {
+    kiri_export::parse_ffmpeg_progress_line(&line)
+}
+
+/// Scaffold runner: plans then executes ffmpeg synchronously (no
+/// cancellation token yet; async jobs-style progress/cancel wiring follows
+/// in the next slice). Blocking: prefer a worker thread for large exports.
+#[tauri::command]
+fn run_export(
+    request: kiri_export::ExportRequest,
+) -> Result<kiri_export::ExportOutcome, CommandError> {
+    let plan =
+        kiri_export::plan_export(&request).map_err(|e| CommandError::Export(e.to_string()))?;
+    kiri_export::run_export_blocking(&plan, "ffmpeg", None, None, |_| {})
+        .map_err(|e| CommandError::Export(e.to_string()))
+}
+
+/// Heuristic zoom suggestions from cursor telemetry (pure, rule-based only).
+#[tauri::command]
+fn suggest_zoom_regions(
+    samples: Vec<kiri_project::editor::CursorSample>,
+    total_ms: i64,
+) -> Vec<kiri_project::editor::ZoomRegion> {
+    kiri_project::editor::suggest_zoom_regions(&samples, total_ms)
+}
+
+/// Silence intervals from PCM peak arrays (pure, rule-based only).
+#[tauri::command]
+fn detect_silences(
+    peaks: Vec<f32>,
+    peak_sample_ms: u64,
+    threshold: f32,
+    min_silence_ms: u64,
+) -> Vec<kiri_export::SilenceInterval> {
+    kiri_export::detect_silences(&peaks, peak_sample_ms, threshold, min_silence_ms)
+}
+
+fn mutate_editor(
+    project_path: &Path,
+    apply: impl FnOnce(
+        &mut kiri_project::EditorState,
+    ) -> Result<(), kiri_project::editor::RegionOpError>,
+) -> Result<kiri_project::EditorState, CommandError> {
+    let mut project = open_project_domain(project_path)?;
+    apply(&mut project.editor).map_err(|e| CommandError::Editor(e.to_string()))?;
+    let editor = std::mem::take(&mut project.editor);
+    project.editor = editor.normalized();
+    project.updated_at = chrono::Utc::now();
+    autosave_project(project_path, &mut project)?;
+    Ok(project.editor)
+}
+
+#[tauri::command]
+fn add_clip_region(
+    project_path: PathBuf,
+    region: kiri_project::editor::ClipRegion,
+) -> Result<kiri_project::EditorState, CommandError> {
+    mutate_editor(&project_path, |editor| {
+        kiri_project::editor::add_clip_region(&mut editor.clips, region)
+    })
+}
+
+#[tauri::command]
+fn move_clip_region(
+    project_path: PathBuf,
+    id: String,
+    new_start_ms: i64,
+) -> Result<kiri_project::EditorState, CommandError> {
+    mutate_editor(&project_path, |editor| {
+        kiri_project::editor::move_clip_region(&mut editor.clips, &id, new_start_ms)
+    })
+}
+
+#[tauri::command]
+fn split_clip_region(
+    project_path: PathBuf,
+    id: String,
+    at_ms: i64,
+) -> Result<kiri_project::EditorState, CommandError> {
+    mutate_editor(&project_path, |editor| {
+        kiri_project::editor::split_clip_region(&mut editor.clips, &id, at_ms)
+    })
+}
+
+#[tauri::command]
+fn trim_clip_region(
+    project_path: PathBuf,
+    id: String,
+    new_start_ms: i64,
+    new_end_ms: i64,
+) -> Result<kiri_project::EditorState, CommandError> {
+    mutate_editor(&project_path, |editor| {
+        kiri_project::editor::trim_clip_region(&mut editor.clips, &id, new_start_ms, new_end_ms)
+    })
+}
+
+#[tauri::command]
+fn add_annotation(
+    project_path: PathBuf,
+    region: kiri_project::editor::AnnotationRegion,
+) -> Result<kiri_project::EditorState, CommandError> {
+    mutate_editor(&project_path, |editor| {
+        kiri_project::editor::add_annotation(&mut editor.annotations, region)
+    })
+}
+
+#[tauri::command]
+fn add_audio_region(
+    project_path: PathBuf,
+    region: kiri_project::editor::AudioRegion,
+) -> Result<kiri_project::EditorState, CommandError> {
+    mutate_editor(&project_path, |editor| {
+        kiri_project::editor::add_audio_region(&mut editor.audio_regions, region)
+    })
+}
+
 #[tauri::command]
 fn list_recent_projects(state: State<'_, AppState>) -> Result<Vec<ProjectSummary>, CommandError> {
-    Ok(state
-        .database
-        .lock()
-        .expect("database mutex poisoned")
+    Ok(lock_database(&state)?
         .recent_projects()?
         .into_iter()
         .map(ProjectSummary::from_recent)
@@ -353,8 +560,14 @@ fn mark_source_ready(active: &mut ActiveRecording, kind: SegmentKind) {
     }
 }
 fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
+    // Availability first: never create files/handles when the source or a
+    // requested device is already gone. This also turns protected/minimized
+    // windows into clear messages instead of generic native errors.
+    preflight_request(&active.request)?;
+
     let root = active.request.project_path.clone();
     let index = active.segment_index;
+    let baseline_len = active.recovery.segments.len();
     let start_micros = active.clock.elapsed_micros();
     let screen_path = segment_path(SegmentKind::Screen, index);
     active.recovery.segments.push(RecoverySegment {
@@ -413,10 +626,28 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
             finalized: false,
         });
     }
-    active
-        .recovery
-        .commit(&root)
-        .map_err(|e| CommandError::Recording(e.to_string()))?;
+
+    // Roll back the manifest entries added above so a failed start never
+    // leaves phantom unfinalized segments behind.
+    let rollback = |active: &mut ActiveRecording| {
+        active.recovery.segments.truncate(baseline_len);
+        let _ = active.recovery.commit(&root);
+    };
+
+    if let Err(e) = active.recovery.commit(&root) {
+        rollback(active);
+        return Err(CommandError::Recording(format!(
+            "cannot write recovery manifest: {e}"
+        )));
+    }
+
+    // Re-resolve the source bounds after preflight so telemetry matches the
+    // live source rectangle.
+    let source = kiri_capture::windows::validate_source_for_capture(&active.request.source_id)
+        .map_err(|e| {
+            rollback(active);
+            CommandError::Recording(e.to_string())
+        })?;
 
     let screen = start_screen_segment(ScreenRecordingConfig {
         source_id: active.request.source_id.clone(),
@@ -428,7 +659,10 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
             10_000_000
         },
     })
-    .map_err(|e| CommandError::Recording(e.to_string()))?;
+    .map_err(|e| {
+        rollback(active);
+        CommandError::Recording(format!("screen capture failed to start: {e}"))
+    })?;
 
     mark_source_ready(active, SegmentKind::Screen);
 
@@ -441,7 +675,10 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
             Ok(handle) => Some(handle),
             Err(error) => {
                 let _ = screen.stop();
-                return Err(CommandError::Recording(error.to_string()));
+                rollback(active);
+                return Err(CommandError::Recording(format!(
+                    "microphone failed to start: {error}"
+                )));
             }
         }
     } else {
@@ -464,7 +701,10 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
                     let _ = handle.stop();
                 }
                 let _ = screen.stop();
-                return Err(CommandError::Recording(error.to_string()));
+                rollback(active);
+                return Err(CommandError::Recording(format!(
+                    "system audio failed to start: {error}"
+                )));
             }
         }
     } else {
@@ -489,7 +729,10 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
                     let _ = handle.stop();
                 }
                 let _ = screen.stop();
-                return Err(CommandError::Recording(error.to_string()));
+                rollback(active);
+                return Err(CommandError::Recording(format!(
+                    "camera failed to start: {error}"
+                )));
             }
         }
     } else {
@@ -499,18 +742,7 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
     if camera.is_some() {
         mark_source_ready(active, SegmentKind::Camera);
     }
-    active
-        .recovery
-        .commit(&root)
-        .map_err(|e| CommandError::Recording(e.to_string()))?;
-
-    let enumerated = kiri_capture::windows::enumerate_sources()
-        .map_err(|e| CommandError::Recording(e.to_string()))?;
-    let source = enumerated
-        .into_iter()
-        .find(|source| source.id == active.request.source_id);
-    let Some(source) = source else {
-        let _ = screen.stop();
+    if let Err(e) = active.recovery.commit(&root) {
         if let Some(handle) = microphone {
             let _ = handle.stop();
         }
@@ -520,10 +752,13 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
         if let Some(handle) = camera {
             let _ = handle.stop();
         }
-        return Err(CommandError::Recording(
-            "selected source closed before telemetry started".into(),
-        ));
-    };
+        let _ = screen.stop();
+        rollback(active);
+        return Err(CommandError::Recording(format!(
+            "cannot write recovery manifest: {e}"
+        )));
+    }
+
     let input = match kiri_input::start_recording(
         root.join(segment_path(SegmentKind::Cursor, index)),
         root.join(segment_path(SegmentKind::Clicks, index)),
@@ -542,7 +777,10 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
             if let Some(handle) = camera {
                 let _ = handle.stop();
             }
-            return Err(CommandError::Recording(error.to_string()));
+            rollback(active);
+            return Err(CommandError::Recording(format!(
+                "input telemetry failed to start: {error}"
+            )));
         }
     };
 
@@ -555,39 +793,47 @@ fn start_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
     Ok(())
 }
 
-fn finish_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
+/// Best-effort segment teardown. Every handle is drained even when one
+/// stop fails, so a single wedged track can never leak threads or lose the
+/// other tracks. Track failures become `device_events` + returned warnings;
+/// only recovery-commit I/O failures are hard errors.
+#[allow(clippy::collapsible_if)]
+fn finish_segment(active: &mut ActiveRecording) -> Result<Vec<String>, CommandError> {
+    let mut warnings = Vec::new();
     let end_micros = active.clock.elapsed_micros();
     if let Some(screen) = active.screen.take() {
-        let (frames, dropped, duration) = screen
-            .stop()
-            .map_err(|e| CommandError::Recording(e.to_string()))?;
-        active.diagnostics.encoded_frames += frames;
-        active.diagnostics.dropped_frames += dropped;
-        active.diagnostics.source_fps = if duration > 0.0 {
-            frames as f64 / duration
-        } else {
-            0.0
-        };
+        if let Some(warning) = stop_screen(screen, active) {
+            push_device_event(active, warning.clone());
+            warnings.push(warning);
+        }
     }
     if let Some(audio) = active.microphone.take() {
-        audio
-            .stop()
-            .map_err(|e| CommandError::Recording(e.to_string()))?;
-    }
-    if let Some(input) = active.input.take() {
-        input
-            .stop()
-            .map_err(|e| CommandError::Recording(e.to_string()))?;
-    }
-    if let Some(camera) = active.camera.take() {
-        camera
-            .stop()
-            .map_err(|e| CommandError::Recording(e.to_string()))?;
+        if let Err(e) = audio.stop() {
+            let warning = format!("microphone stop failed: {e}");
+            push_device_event(active, warning.clone());
+            warnings.push(warning);
+        }
     }
     if let Some(audio) = active.system_audio.take() {
-        audio
-            .stop()
-            .map_err(|e| CommandError::Recording(e.to_string()))?;
+        if let Err(e) = audio.stop() {
+            let warning = format!("system audio stop failed: {e}");
+            push_device_event(active, warning.clone());
+            warnings.push(warning);
+        }
+    }
+    if let Some(camera) = active.camera.take() {
+        if let Err(e) = camera.stop() {
+            let warning = format!("camera stop failed: {e}");
+            push_device_event(active, warning.clone());
+            warnings.push(warning);
+        }
+    }
+    if let Some(input) = active.input.take() {
+        if let Err(e) = input.stop() {
+            let warning = format!("input telemetry stop failed: {e}");
+            push_device_event(active, warning.clone());
+            warnings.push(warning);
+        }
     }
     for segment in active
         .recovery
@@ -601,7 +847,53 @@ fn finish_segment(active: &mut ActiveRecording) -> Result<(), CommandError> {
     active
         .recovery
         .commit(&active.request.project_path)
-        .map_err(|e| CommandError::Recording(e.to_string()))
+        .map_err(|e| CommandError::Recording(format!("cannot write recovery manifest: {e}")))?;
+
+    // Recordly-style diagnostics sidecar next to the screen segment plus
+    // timing sidecars next to audio tracks. Failures are warnings, never
+    // fatal to the stop path.
+    let root = active.request.project_path.clone();
+    let screen_rel = segment_path(SegmentKind::Screen, active.segment_index);
+    let snapshot = serde_json::json!({
+        "phase": "stop",
+        "segmentIndex": active.segment_index,
+        "elapsedMicros": end_micros,
+        "encodedFrames": active.diagnostics.encoded_frames,
+        "droppedFrames": active.diagnostics.dropped_frames,
+        "sourceFps": active.diagnostics.source_fps,
+        "encoder": active.diagnostics.encoder,
+        "deviceEvents": active.diagnostics.device_events,
+        "warnings": warnings,
+    });
+    if let Err(e) = kiri_capture::append_diagnostics_snapshot(&root.join(&screen_rel), &snapshot) {
+        warnings.push(format!("diagnostics sidecar write failed: {e}"));
+    }
+    for kind in [SegmentKind::Microphone, SegmentKind::SystemAudio] {
+        let wanted = matches!(
+            (
+                kind,
+                &active.request.microphone_id,
+                active.request.system_audio
+            ),
+            (SegmentKind::Microphone, Some(_), _) | (SegmentKind::SystemAudio, _, true)
+        );
+        if wanted {
+            let audio_rel = segment_path(kind, active.segment_index);
+            let start_delay_ms = active
+                .recovery
+                .segments
+                .iter()
+                .find(|s| s.kind == kind && s.relative_path == audio_rel)
+                .map(|s| s.start_micros / 1000);
+            if let Err(e) = kiri_capture::AudioTimingMetadata::write_sidecar(
+                &root.join(&audio_rel),
+                start_delay_ms,
+            ) {
+                warnings.push(format!("audio timing sidecar write failed: {e}"));
+            }
+        }
+    }
+    Ok(warnings)
 }
 
 #[tauri::command]
@@ -610,27 +902,21 @@ fn start_recording(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<RecordingStatus, CommandError> {
-    let mut guard = state.recording.lock().expect("recording mutex poisoned");
+    // Validate before touching any mutex-protected project state so a bad
+    // request never leaves an orphan interrupted session behind.
+    preflight_request(&request)?;
+    let mut guard = lock_recording(&state)?;
     if guard.is_some() {
         return Err(CommandError::Recording(
-            "a recording is already active".into(),
+            "a recording is already active; stop it before starting a new one".into(),
         ));
     }
-    let mut project = open_project_domain(&request.project_path)?;
+    // Open the project first (clear error when the .kiri folder is missing).
+    let project = open_project_domain(&request.project_path)?;
     let clock = RecordingClock::start().map_err(|e| CommandError::Recording(e.to_string()))?;
     let recovery = RecoveryManifest::new(project.id, clock.origin().clone());
-    project.recording_sessions.push(RecordingSessionMetadata {
-        id: recovery.session_id,
-        wall_time_utc: recovery.clock.wall_time_utc,
-        qpc_origin_ticks: recovery.clock.qpc_ticks,
-        qpc_frequency: recovery.clock.qpc_frequency,
-        paused_duration: TimeMicros(0),
-        interrupted: true,
-    });
-    project.frame_rate.numerator = request.fps;
-    autosave_project(&request.project_path, &mut project)?;
     let mut active = ActiveRecording {
-        request,
+        request: request.clone(),
         clock,
         recovery,
         screen: None,
@@ -651,7 +937,29 @@ fn start_recording(
             device_events: Vec::new(),
         },
     };
+    // Any failure here already rolled back handles + manifest entries inside
+    // `start_segment`, and `active` is dropped without touching the project.
     start_segment(&mut active)?;
+
+    // Only now mutate the project: frame rate + interrupted session row.
+    let mut project = open_project_domain(&request.project_path)?;
+    project.recording_sessions.push(RecordingSessionMetadata {
+        id: active.recovery.session_id,
+        wall_time_utc: active.recovery.clock.wall_time_utc,
+        qpc_origin_ticks: active.recovery.clock.qpc_ticks,
+        qpc_frequency: active.recovery.clock.qpc_frequency,
+        paused_duration: TimeMicros(0),
+        interrupted: true,
+    });
+    project.frame_rate.numerator = request.fps;
+    if let Err(e) = autosave_project(&request.project_path, &mut project) {
+        // Project save failed (disk full, locked file): tear down captures so
+        // no thread leaks, keep recovery for replay, then report clearly.
+        let _ = finish_segment(&mut active);
+        return Err(CommandError::Recording(format!(
+            "recording started but project could not be saved: {e}"
+        )));
+    }
     let status = RecordingStatus {
         state: "recording".into(),
         elapsed_micros: 0,
@@ -668,7 +976,7 @@ fn pause_recording(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<RecordingStatus, CommandError> {
-    let mut guard = state.recording.lock().expect("recording mutex poisoned");
+    let mut guard = lock_recording(&state)?;
     let active = guard
         .as_mut()
         .ok_or_else(|| CommandError::Recording("no recording is active".into()))?;
@@ -677,14 +985,21 @@ fn pause_recording(
             "recording is already paused".into(),
         ));
     }
-    finish_segment(active)?;
+    // Best-effort: `finish_segment` always drains handles and finalizes, so
+    // pause succeeds even when one track reports a stop warning.
+    let warnings = finish_segment(active)?;
     active.clock.pause();
     active.paused = true;
+    let message = if warnings.is_empty() {
+        "Recording paused; segment finalized".to_string()
+    } else {
+        format!("Recording paused with warnings: {}", warnings.join("; "))
+    };
     let status = RecordingStatus {
         state: "paused".into(),
         elapsed_micros: active.clock.elapsed_micros(),
         segment_index: active.segment_index,
-        message: "Recording paused; segment finalized".into(),
+        message,
     };
     let _ = app.emit("recording-status", &status);
     Ok(status)
@@ -695,16 +1010,24 @@ fn resume_recording(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<RecordingStatus, CommandError> {
-    let mut guard = state.recording.lock().expect("recording mutex poisoned");
+    let mut guard = lock_recording(&state)?;
     let active = guard
         .as_mut()
         .ok_or_else(|| CommandError::Recording("no recording is active".into()))?;
     if !active.paused {
         return Err(CommandError::Recording("recording is not paused".into()));
     }
+    // Resume the clock first so the new segment's start timestamp excludes
+    // the paused gap; on failure revert both clock and index so a retry sees
+    // the original paused state instead of a half-resumed one.
     active.clock.resume();
+    let previous_index = active.segment_index;
     active.segment_index += 1;
-    start_segment(active)?;
+    if let Err(e) = start_segment(active) {
+        active.segment_index = previous_index;
+        active.clock.pause();
+        return Err(e);
+    }
     let status = RecordingStatus {
         state: "recording".into(),
         elapsed_micros: active.clock.elapsed_micros(),
@@ -727,20 +1050,17 @@ fn stop_recording(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<StopRecordingResult, CommandError> {
-    let mut active = state
-        .recording
-        .lock()
-        .expect("recording mutex poisoned")
+    // Take out of the mutex first so a slow device stop never blocks status
+    // polls; the guard is released before any I/O below.
+    let mut active = lock_recording(&state)?
         .take()
         .ok_or_else(|| CommandError::Recording("no recording is active".into()))?;
+    let mut warnings = Vec::new();
     if !active.paused {
-        finish_segment(&mut active)?;
+        warnings = finish_segment(&mut active)?;
     }
-    active.recovery.active = false;
-    active
-        .recovery
-        .commit(&active.request.project_path)
-        .map_err(|e| CommandError::Recording(e.to_string()))?;
+    // Update the project BEFORE deactivating recovery: if the project save
+    // fails, recovery stays active so the user can still replay the segments.
     let mut project = open_project_domain(&active.request.project_path)?;
     project.duration = TimeMicros(active.clock.elapsed_micros());
     if let Some(session) = project
@@ -749,6 +1069,7 @@ fn stop_recording(
         .find(|session| session.id == active.recovery.session_id)
     {
         session.interrupted = false;
+        session.paused_duration = TimeMicros(active.clock.paused_duration_micros());
     }
     for segment in active
         .recovery
@@ -766,11 +1087,21 @@ fn stop_recording(
         }
     }
     autosave_project(&active.request.project_path, &mut project)?;
+    active.recovery.active = false;
+    active
+        .recovery
+        .commit(&active.request.project_path)
+        .map_err(|e| CommandError::Recording(format!("cannot write recovery manifest: {e}")))?;
+    let message = if warnings.is_empty() {
+        "All finalized segments were committed to the project".to_string()
+    } else {
+        format!("Stopped with warnings: {}", warnings.join("; "))
+    };
     let status = RecordingStatus {
         state: "stopped".into(),
         elapsed_micros: active.clock.elapsed_micros(),
         segment_index: active.segment_index,
-        message: "All finalized segments were committed to the project".into(),
+        message,
     };
     let _ = app.emit("recording-status", &status);
     Ok(StopRecordingResult {
@@ -779,54 +1110,135 @@ fn stop_recording(
     })
 }
 
-#[tauri::command]
+/// HUD/countdown poll hook. Never panics, never holds the recording lock
+/// across device enumeration, and emits `recording-interrupted` (Recordly
+/// parity) the first time a disconnect is observed so overlay windows can
+/// react even though they only poll this command.
 #[allow(clippy::collapsible_if)]
-fn recording_status(state: State<'_, AppState>) -> Option<RecordingStatus> {
-    let mut guard = state.recording.lock().expect("recording mutex poisoned");
+#[tauri::command]
+fn recording_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Option<RecordingStatus> {
+    // Snapshot under a short lock, then release before any enumeration.
+    struct Snapshot {
+        microphone_id: Option<String>,
+        camera_id: Option<String>,
+        system_audio: bool,
+        source_id: String,
+    }
+    let snapshot = {
+        let Ok(guard) = state.recording.lock() else {
+            return None;
+        };
+        let active = guard.as_ref()?;
+        Snapshot {
+            microphone_id: active.request.microphone_id.clone(),
+            camera_id: active.request.camera_id.clone(),
+            system_audio: active.request.system_audio,
+            source_id: active.request.source_id.clone(),
+        }
+    };
+
+    let mut fresh_events: Vec<String> = Vec::new();
+    let mut push_once = |event: String| {
+        if !fresh_events.iter().any(|e| e == &event) {
+            fresh_events.push(event);
+        }
+    };
+
+    if let Some(id) = snapshot.microphone_id.as_deref() {
+        if let Ok(devices) = kiri_audio::enumerate_devices() {
+            if !devices
+                .iter()
+                .any(|d| d.kind == AudioSourceKind::Microphone && d.id == id)
+            {
+                push_once(format!(
+                    "microphone disconnected ({id}); audio after this point is missing"
+                ));
+            }
+        }
+    }
+    if snapshot.system_audio {
+        if let Ok(devices) = kiri_audio::enumerate_devices() {
+            if !devices
+                .iter()
+                .any(|d| d.kind == AudioSourceKind::SystemLoopback)
+            {
+                push_once("system audio device disconnected; system track is silent".into());
+            }
+        }
+    }
+    if let Some(id) = snapshot.camera_id.as_deref() {
+        if let Ok(cameras) = kiri_camera::enumerate_devices() {
+            if !cameras.iter().any(|d| d.id == id) {
+                push_once(format!(
+                    "camera disconnected ({id}); camera track is frozen"
+                ));
+            }
+        }
+    }
+    if let Ok(sources) = kiri_capture::windows::enumerate_sources() {
+        match sources.into_iter().find(|s| s.id == snapshot.source_id) {
+            None => push_once("capture source closed; video may be frozen".into()),
+            Some(source) => match source.availability {
+                kiri_capture::SourceAvailability::Available => {}
+                kiri_capture::SourceAvailability::Minimized => {
+                    push_once("capture source minimized; video may be frozen".into());
+                }
+                kiri_capture::SourceAvailability::Closed => {
+                    push_once("capture source closed; video may be frozen".into());
+                }
+                kiri_capture::SourceAvailability::Protected => {
+                    push_once("capture source is protected; video may be blank".into());
+                }
+                kiri_capture::SourceAvailability::Invalid => {
+                    push_once("capture source is not capturable".into());
+                }
+            },
+        }
+    }
+
+    // Re-lock briefly to merge new events and build the status.
+    let Ok(mut guard) = state.recording.lock() else {
+        return None;
+    };
     let active = guard.as_mut()?;
-    if let Ok(devices) = kiri_audio::enumerate_devices() {
-        if let Some(id) = active.request.microphone_id.as_ref() {
-            if !devices.iter().any(|device| &device.id == id)
-                && !active
-                    .diagnostics
-                    .device_events
-                    .iter()
-                    .any(|event| event == "microphone disconnected")
-            {
-                active
-                    .diagnostics
-                    .device_events
-                    .push("microphone disconnected".into());
-            }
+    let mut newly_added = Vec::new();
+    for event in fresh_events {
+        if !active.diagnostics.device_events.iter().any(|e| e == &event) {
+            active.diagnostics.device_events.push(event.clone());
+            newly_added.push(event);
         }
     }
-    if let Ok(cameras) = kiri_camera::enumerate_devices() {
-        if let Some(id) = active.request.camera_id.as_ref() {
-            if !cameras.iter().any(|device| &device.id == id)
-                && !active
-                    .diagnostics
-                    .device_events
-                    .iter()
-                    .any(|event| event == "camera disconnected")
-            {
-                active
-                    .diagnostics
-                    .device_events
-                    .push("camera disconnected".into());
+    let message = active
+        .diagnostics
+        .device_events
+        .last()
+        .cloned()
+        .unwrap_or_else(|| {
+            if active.paused {
+                "Recording is paused".into()
+            } else {
+                "Recording session is active".into()
             }
-        }
-    }
-    Some(RecordingStatus {
+        });
+    let status = RecordingStatus {
         state: if active.paused { "paused" } else { "recording" }.into(),
         elapsed_micros: active.clock.elapsed_micros(),
         segment_index: active.segment_index,
-        message: active
-            .diagnostics
-            .device_events
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "Recording session is active".into()),
-    })
+        message,
+    };
+    // Emit interruption once per new event so HUD/countdown windows (which
+    // only poll) can surface it immediately, mirroring Recordly's
+    // `emitRecordingInterrupted`.
+    for event in newly_added {
+        let _ = app.emit(
+            "recording-interrupted",
+            serde_json::json!({
+                "reason": "device-disconnected",
+                "message": event,
+            }),
+        );
+    }
+    Some(status)
 }
 
 #[derive(Serialize)]
@@ -842,16 +1254,11 @@ struct RecoveryCandidate {
 fn list_recoverable_recordings(
     state: State<'_, AppState>,
 ) -> Result<Vec<RecoveryCandidate>, CommandError> {
-    let recents = state
-        .database
-        .lock()
-        .expect("database mutex poisoned")
-        .recent_projects()?;
+    let recents = lock_database(&state)?.recent_projects()?;
     let mut candidates = Vec::new();
     for recent in recents.into_iter().filter(|value| !value.missing) {
-        if let Some(recovery) = RecoveryManifest::replay(&recent.path)
-            .map_err(|e| CommandError::Recording(e.to_string()))?
-            .filter(|v| v.active)
+        // Lenient: one corrupt manifest must not fail the whole list.
+        if let Some(recovery) = RecoveryManifest::replay_lenient(&recent.path).filter(|v| v.active)
         {
             candidates.push(RecoveryCandidate {
                 project_path: recent.path.clone(),
@@ -867,7 +1274,11 @@ fn list_recoverable_recordings(
 #[tauri::command]
 fn recover_recording(project_path: PathBuf) -> Result<ProjectSummary, CommandError> {
     let mut recovery = RecoveryManifest::replay(&project_path)
-        .map_err(|e| CommandError::Recording(e.to_string()))?
+        .map_err(|e| {
+            CommandError::Recording(format!(
+                "recovery manifest is unreadable or corrupt and cannot be replayed: {e}"
+            ))
+        })?
         .ok_or_else(|| CommandError::Recording("no recovery manifest exists".into()))?;
     let mut project = open_project_domain(&project_path)?;
     for segment in recovery.playable_segments(&project_path) {
@@ -948,7 +1359,18 @@ panic={info}
             stop_recording,
             recording_status,
             list_recoverable_recordings,
-            recover_recording
+            recover_recording,
+            export_target_bitrate,
+            parse_ffmpeg_progress_line,
+            run_export,
+            suggest_zoom_regions,
+            detect_silences,
+            add_clip_region,
+            move_clip_region,
+            split_clip_region,
+            trim_clip_region,
+            add_annotation,
+            add_audio_region
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kiri");

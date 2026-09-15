@@ -115,7 +115,7 @@ impl Default for CountdownSettings {
 
 impl CountdownSettings {
     pub fn normalized(mut self) -> Self {
-        if self.seconds != 0 && self.seconds != 3 && self.seconds != 5 {
+        if self.seconds != 0 && self.seconds != 3 && self.seconds != 5 && self.seconds != 10 {
             self.seconds = 3;
         }
         self

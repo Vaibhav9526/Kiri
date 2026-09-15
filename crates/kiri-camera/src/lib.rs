@@ -5,9 +5,17 @@ use thiserror::Error;
 pub enum CameraError {
     #[error("camera capture is only available on Windows")]
     Unsupported,
+    #[error("camera unavailable: {0}")]
+    Unavailable(String),
+    #[error("timed out waiting for camera to start: {0}")]
+    StartTimeout(String),
     #[error("camera device failed: {0}")]
     Device(String),
 }
+
+/// Mirrors the audio start timeout so a wedged camera open cannot hang the
+/// Tauri command forever (Recordly uses 12s for native capture start).
+pub const CAMERA_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,12 +107,41 @@ impl CameraRecordingHandle {
     pub fn stop(mut self) -> Result<u64, CameraError> {
         use std::sync::atomic::Ordering;
         self.stop.store(true, Ordering::Release);
-        self.thread
-            .take()
-            .expect("camera thread exists")
+        let Some(thread) = self.thread.take() else {
+            return Err(CameraError::Device(
+                "camera capture thread was already stopped".into(),
+            ));
+        };
+        thread
             .join()
-            .map_err(|_| CameraError::Device("camera capture thread panicked".into()))?
+            .unwrap_or_else(|_| Err(CameraError::Device("camera capture thread panicked".into())))
     }
+}
+
+impl Drop for CameraRecordingHandle {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+/// Preflight with an actionable message; verifies the selected camera still
+/// exists before any file is created.
+#[cfg(windows)]
+pub fn check_device_available(device_id: &str) -> Result<(), CameraError> {
+    let devices = enumerate_devices()?;
+    if devices.iter().any(|d| d.id == device_id) {
+        Ok(())
+    } else {
+        Err(CameraError::Unavailable(format!(
+            "camera '{device_id}' was unplugged or is in use by another app; reconnect it or pick another camera"
+        )))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn check_device_available(_: &str) -> Result<(), CameraError> {
+    Err(CameraError::Unsupported)
 }
 
 #[cfg(windows)]
@@ -112,7 +149,16 @@ pub fn start_recording(
     device_id: String,
     path: std::path::PathBuf,
 ) -> Result<CameraRecordingHandle, CameraError> {
-    use std::sync::{Arc, atomic::AtomicBool};
+    use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
+    if device_id.trim().is_empty() {
+        return Err(CameraError::Unavailable(
+            "no camera selected; pick a camera or turn it off".into(),
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| CameraError::Device(format!("cannot create output folder: {e}")))?;
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
@@ -120,17 +166,31 @@ pub fn start_recording(
         .name("kiri-camera".into())
         .spawn(move || capture_camera(device_id, path, thread_stop, ready_tx))
         .map_err(|error| CameraError::Device(error.to_string()))?;
-    if ready_rx.recv().is_err() {
-        return Err(thread
+    match ready_rx.recv_timeout(CAMERA_START_TIMEOUT) {
+        Ok(()) => Ok(CameraRecordingHandle {
+            stop,
+            thread: Some(thread),
+        }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            stop.store(true, Ordering::Release);
+            let _ = thread.join();
+            Err(CameraError::StartTimeout(
+                "camera did not start within 12s; it may be in use by another app".into(),
+            ))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => thread
             .join()
-            .map_err(|_| CameraError::Device("camera capture thread panicked".into()))?
+            .unwrap_or_else(|_| Err(CameraError::Device("camera capture thread panicked".into())))
             .err()
-            .unwrap_or_else(|| CameraError::Device("camera capture ended before ready".into())));
+            .map_or_else(
+                || {
+                    Err(CameraError::Unavailable(
+                        "camera capture ended before it became ready".into(),
+                    ))
+                },
+                Err,
+            ),
     }
-    Ok(CameraRecordingHandle {
-        stop,
-        thread: Some(thread),
-    })
 }
 
 #[cfg(not(windows))]
@@ -162,10 +222,14 @@ fn capture_camera(
     let index = device_id
         .parse::<u32>()
         .map(CameraIndex::Index)
-        .unwrap_or_else(|_| CameraIndex::String(device_id));
+        .unwrap_or_else(|_| CameraIndex::String(device_id.clone()));
     let requested = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
-    let mut camera = Camera::with_backend(index, requested, ApiBackend::MediaFoundation)
-        .map_err(|error| CameraError::Device(error.to_string()))?;
+    let mut camera =
+        Camera::with_backend(index, requested, ApiBackend::MediaFoundation).map_err(|error| {
+            CameraError::Unavailable(format!(
+                "camera '{device_id}' could not be opened ({error}); it may be unplugged or in use"
+            ))
+        })?;
     let formats = camera
         .compatible_camera_formats()
         .map_err(|error| CameraError::Device(error.to_string()))?;
@@ -180,9 +244,11 @@ fn capture_camera(
             ))
             .map_err(|error| CameraError::Device(error.to_string()))?;
     }
-    camera
-        .open_stream()
-        .map_err(|error| CameraError::Device(error.to_string()))?;
+    camera.open_stream().map_err(|error| {
+        CameraError::Unavailable(format!(
+            "camera '{device_id}' could not be started ({error}); it may be in use by another app"
+        ))
+    })?;
     let actual = camera.camera_format();
     let width = actual.width();
     let height = actual.height();
@@ -201,10 +267,21 @@ fn capture_camera(
     let _ = ready.send(());
     let mut frames = 0_u64;
     while !stop.load(Ordering::Acquire) {
-        let image = camera
+        let image = match camera
             .frame()
             .and_then(|buffer| buffer.decode_image::<RgbAFormat>())
-            .map_err(|error| CameraError::Device(error.to_string()))?;
+        {
+            Ok(image) => image,
+            Err(error) => {
+                // Finalize the partial MP4 so the segment stays playable for
+                // recovery, then report the disconnect clearly.
+                let _ = camera.stop_stream();
+                let _ = encoder.finish();
+                return Err(CameraError::Unavailable(format!(
+                    "camera '{device_id}' disconnected during recording ({error})"
+                )));
+            }
+        };
         let rgba = image.into_raw();
         let row_bytes = width as usize * 4;
         let mut bgra_bottom_up = vec![0_u8; rgba.len()];

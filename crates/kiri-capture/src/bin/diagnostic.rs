@@ -48,13 +48,15 @@ mod windows_main {
             frame: &mut Frame,
             control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
-            self.encoder
-                .as_mut()
-                .expect("encoder exists")
-                .send_frame(frame)?;
+            let Some(encoder) = self.encoder.as_mut() else {
+                return Ok(());
+            };
+            encoder.send_frame(frame)?;
             self.frames += 1;
             if self.started.elapsed().as_secs() >= self.seconds {
-                self.encoder.take().expect("encoder exists").finish()?;
+                if let Some(encoder) = self.encoder.take() {
+                    encoder.finish()?;
+                }
                 eprintln!(
                     "{{\"frames\":{},\"seconds\":{:.3},\"gpuPath\":true,\"encoder\":\"Media Foundation H.264\"}}",
                     self.frames,

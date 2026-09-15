@@ -62,9 +62,11 @@ export function Home() {
     }
   }
 
-  async function chooseOpen() {
-    const path = await open({ directory: true, multiple: false, title: 'Open a .kiri project' });
-    if (!path || Array.isArray(path)) return;
+  async function openRecent(path: string, missing: boolean) {
+    if (missing) {
+      setNotice('This project moved or is unavailable. Locate it with Open Kiri Project.');
+      return;
+    }
     setBusy(true);
     try {
       const item = await openProject(path);
@@ -73,6 +75,29 @@ export function Home() {
       setNotice(`Opened ${item.title}`);
     } catch (error) {
       setNotice(`Project could not be opened. ${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseOpen() {
+    const path = await open({ directory: true, multiple: false, title: 'Open a .kiri project' });
+    if (!path || Array.isArray(path)) return;
+    await openRecent(path, false);
+  }
+
+  async function recover(item: RecoveryCandidate) {
+    setBusy(true);
+    try {
+      const project = await recoverRecording(item.projectPath);
+      setRecoveries((current) => current.filter((value) => value.sessionId !== item.sessionId));
+      setRecents((current) => [project, ...current.filter((value) => value.id !== project.id)]);
+      await setActiveProject(project.path);
+      setNotice(
+        `Recovered ${item.finalizedSegments} finalized segments from ${item.projectTitle}.`,
+      );
+    } catch (error: unknown) {
+      setNotice(`Recovery failed. ${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -102,22 +127,8 @@ export function Home() {
             {recoveries.map((item) => (
               <button
                 key={item.sessionId}
-                onClick={() =>
-                  void recoverRecording(item.projectPath)
-                    .then((project) => {
-                      setRecoveries((current) =>
-                        current.filter((value) => value.sessionId !== item.sessionId),
-                      );
-                      setRecents((current) => [
-                        project,
-                        ...current.filter((value) => value.id !== project.id),
-                      ]);
-                      setNotice(
-                        `Recovered ${item.finalizedSegments} finalized segments from ${item.projectTitle}.`,
-                      );
-                    })
-                    .catch((error: unknown) => setNotice(`Recovery failed. ${String(error)}`))
-                }
+                disabled={busy}
+                onClick={() => void recover(item)}
               >
                 Recover
               </button>
@@ -158,13 +169,13 @@ export function Home() {
               <small>Choose a source and record locally.</small>
             </span>
           </button>
-          <button className="action" disabled title="AI Walkthrough begins in Phase 4">
+          <button className="action" disabled title="AI Walkthrough begins in Phase 4 — later phase">
             <span className="action-icon">
               <Sparkles aria-hidden="true" />
             </span>
             <span>
               <strong>New AI Walkthrough</strong>
-              <small>Unavailable until Phase 4</small>
+              <small>Later phase · unavailable until Phase 4</small>
             </span>
           </button>
         </div>
@@ -187,9 +198,9 @@ export function Home() {
           </form>
         )}
         <div className="secondary-actions">
-          <button disabled title="Recording import begins in Phase 2">
+          <button disabled title="Recording import begins in Phase 2 — later phase">
             <Video aria-hidden="true" />
-            Open Recording <span>Phase 2</span>
+            Open Recording <span>Later phase · Phase 2</span>
           </button>
           <button onClick={() => void chooseOpen()} disabled={busy}>
             <FolderOpen aria-hidden="true" />
@@ -223,13 +234,9 @@ export function Home() {
               {recents.map((item) => (
                 <li key={item.id}>
                   <button
-                    onClick={() =>
-                      item.missing
-                        ? setNotice(
-                            'This project moved or is unavailable. Locate it with Open Kiri Project.',
-                          )
-                        : void openProject(item.path)
-                    }
+                    disabled={busy}
+                    onClick={() => void openRecent(item.path, item.missing)}
+                    title={item.missing ? 'Project moved or unavailable' : `Open ${item.title}`}
                   >
                     <span className="project-glyph">K</span>
                     <span>

@@ -32,11 +32,12 @@ test('source selector renders as a focused boundary', async ({ page }) => {
   await expect(page).toHaveScreenshot('source-selector-dark.png', { animations: 'disabled' });
 });
 
-test('recording controller boundary is honest and disabled', async ({ page }) => {
+test('recording controller boundary is honest when idle', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kiri.theme.mode', 'dark'));
   await page.setViewportSize({ width: 280, height: 48 });
   await page.goto('/?window=recording-controller');
   await expect(page.getByLabel('Recording controller')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Pause recording' })).toBeDisabled();
+  await expect(page.getByText('IDLE')).toBeVisible();
+  await expect(page.getByText('No active recording')).toBeVisible();
   await expect(page).toHaveScreenshot('recording-controller-dark.png', { animations: 'disabled' });
 });

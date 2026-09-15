@@ -175,21 +175,46 @@ mod recorder {
 
     impl InputRecordingHandle {
         pub fn stop(mut self) -> Result<u64, InputError> {
-            unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) }
-                .map_err(|error| InputError::Native(error.to_string()))?;
-            self.hook_thread
-                .take()
-                .expect("hook thread exists")
-                .join()
-                .map_err(|_| InputError::Native("mouse hook thread panicked".into()))??;
-            if let Ok(mut sender) = SENDER.get().expect("sender initialized").lock() {
+            let posted =
+                unsafe { PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+            if let Err(error) = posted {
+                // The hook thread may have already exited; still join both
+                // threads below so no writer is leaked.
+                let _ = error;
+            }
+            if let Some(thread) = self.hook_thread.take() {
+                thread.join().unwrap_or_else(|_| {
+                    Err(InputError::Native("mouse hook thread panicked".into()))
+                })?;
+            }
+            if let Some(lock) = SENDER.get()
+                && let Ok(mut sender) = lock.lock()
+            {
                 sender.take();
             }
-            self.writer_thread
-                .take()
-                .expect("writer thread exists")
-                .join()
-                .map_err(|_| InputError::Native("telemetry writer thread panicked".into()))?
+            if let Some(thread) = self.writer_thread.take() {
+                return thread.join().unwrap_or_else(|_| {
+                    Err(InputError::Native(
+                        "telemetry writer thread panicked".into(),
+                    ))
+                });
+            }
+            Ok(0)
+        }
+    }
+
+    impl Drop for InputRecordingHandle {
+        fn drop(&mut self) {
+            // Best-effort unblock of the hook message loop so a dropped handle
+            // never leaves a global hook thread behind.
+            unsafe {
+                let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+            if let Some(lock) = SENDER.get()
+                && let Ok(mut sender) = lock.lock()
+            {
+                sender.take();
+            }
         }
     }
 
@@ -199,6 +224,11 @@ mod recorder {
         source: RectI32,
         offset_micros: i64,
     ) -> Result<InputRecordingHandle, InputError> {
+        if source.width <= 0 || source.height <= 0 {
+            return Err(InputError::Native(
+                "capture source has no visible area; restore the window before recording".into(),
+            ));
+        }
         let (sender, receiver) = sync_channel(8192);
         *SENDER
             .get_or_init(|| Mutex::new(None))
@@ -215,7 +245,7 @@ mod recorder {
             });
         let writer_thread = std::thread::Builder::new()
             .name("kiri-input-writer".into())
-            .spawn(move || writer_loop(receiver, cursor_path, clicks_path))
+            .spawn(move || writer_loop(receiver, cursor_path, clicks_path, offset_micros <= 0))
             .map_err(|error| InputError::Native(error.to_string()))?;
         let (thread_sender, thread_receiver) = std::sync::mpsc::channel();
         let hook_thread = std::thread::Builder::new()
@@ -249,24 +279,31 @@ mod recorder {
         receiver: Receiver<HookEvent>,
         cursor_path: PathBuf,
         clicks_path: PathBuf,
+        fresh_session: bool,
     ) -> Result<u64, InputError> {
         if let Some(parent) = cursor_path.parent() {
             fs::create_dir_all(parent).map_err(|e| InputError::Native(e.to_string()))?;
         }
-        let mut cursor = BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(cursor_path)
-                .map_err(|e| InputError::Native(e.to_string()))?,
-        );
-        let mut clicks = BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(clicks_path)
-                .map_err(|e| InputError::Native(e.to_string()))?,
-        );
+        if let Some(parent) = clicks_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| InputError::Native(e.to_string()))?;
+        }
+        // First segment of a session truncates stale telemetry so a reused
+        // project path never mixes two sessions; later segments (pause/resume)
+        // append to the same `cursor.jsonl` / `clicks.jsonl`.
+        let open = |path: &PathBuf| {
+            if fresh_session {
+                OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(path)
+            } else {
+                OpenOptions::new().create(true).append(true).open(path)
+            }
+            .map_err(|e| InputError::Native(e.to_string()))
+        };
+        let mut cursor = BufWriter::new(open(&cursor_path)?);
+        let mut clicks = BufWriter::new(open(&clicks_path)?);
         let mut count = 0;
         while let Ok(event) = receiver.recv() {
             let writer = match event {
@@ -287,6 +324,10 @@ mod recorder {
 ",
                 )
                 .map_err(|e| InputError::Native(e.to_string()))?;
+            // Flush per event so a crash still leaves recoverable telemetry.
+            writer
+                .flush()
+                .map_err(|e| InputError::Native(e.to_string()))?;
             count += 1;
         }
         cursor
@@ -301,6 +342,32 @@ mod recorder {
 
 #[cfg(windows)]
 pub use recorder::{InputRecordingHandle, start as start_recording};
+
+#[cfg(not(windows))]
+mod unsupported {
+    use super::{InputError, RectI32};
+    use std::path::PathBuf;
+
+    pub struct InputRecordingHandle;
+
+    impl InputRecordingHandle {
+        pub fn stop(self) -> Result<u64, InputError> {
+            Err(InputError::Unsupported)
+        }
+    }
+
+    pub fn start_recording(
+        _: PathBuf,
+        _: PathBuf,
+        _: RectI32,
+        _: i64,
+    ) -> Result<InputRecordingHandle, InputError> {
+        Err(InputError::Unsupported)
+    }
+}
+
+#[cfg(not(windows))]
+pub use unsupported::{InputRecordingHandle, start_recording};
 #[cfg(test)]
 mod tests {
     use super::*;

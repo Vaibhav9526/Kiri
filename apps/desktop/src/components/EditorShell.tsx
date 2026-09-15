@@ -2,10 +2,16 @@ import { useEffect, useState } from 'react';
 import { getActiveProject, getEditorState, listRecentProjects } from '@/ipc/client';
 import type { EditorState, ProjectSummary } from '@/ipc/types';
 
-// Phase 0 redo: Recordly editor-shell skeleton (top bar, left rail, canvas,
-// right inspector, bottom timeline). Canvas/timeline become functional in
-// Phase 2; AI panels stay disabled until their explicit phase.
+// Recordly editor-shell skeleton (top bar, left rail, canvas, right
+// inspector, bottom timeline). Canvas/timeline become functional in Phase 2;
+// AI panels stay disabled until their explicit phase.
 const RAIL = ['Media', 'Background', 'Annotations', 'Captions', 'Audio', 'AI', 'MCP'] as const;
+
+function railTitle(item: (typeof RAIL)[number]): string {
+  if (item === 'AI') return 'AI walkthrough begins in a later phase (Phase 4)';
+  if (item === 'MCP') return 'MCP integrations begin in a later phase';
+  return item;
+}
 
 export function EditorShell() {
   const [project, setProject] = useState<ProjectSummary | null>(null);
@@ -25,30 +31,34 @@ export function EditorShell() {
   const aiDisabled = section === 'AI' || section === 'MCP';
 
   return (
-    <main className="editor-shell" aria-label="Kiri editor">
+    <main className="editor-shell launch-theme" aria-label="Kiri editor">
       <header className="editor-topbar" data-tauri-drag-region>
         <strong>Kiri Editor</strong>
-        <span>{project ? project.title : 'No project open'}</span>
+        <span title={project?.path ?? ''}>{project ? project.title : 'No project open'}</span>
       </header>
       <div className="editor-body">
         <nav className="editor-rail" aria-label="Editor sections">
-          {RAIL.map((item) => (
-            <button
-              key={item}
-              aria-pressed={section === item}
-              disabled={item === 'AI' || item === 'MCP'}
-              title={
-                item === 'AI'
-                  ? 'AI walkthrough begins in a later phase'
-                  : item === 'MCP'
-                    ? 'MCP integrations begin in a later phase'
-                    : item
-              }
-              onClick={() => setSection(item)}
-            >
-              {item}
-            </button>
-          ))}
+          {RAIL.map((item) => {
+            const disabled = item === 'AI' || item === 'MCP';
+            return (
+              <button
+                key={item}
+                aria-pressed={section === item}
+                disabled={disabled}
+                title={railTitle(item)}
+                onClick={() => {
+                  if (!disabled) setSection(item);
+                }}
+              >
+                <span>{item}</span>
+                {disabled && (
+                  <span className="later-badge" aria-hidden="true">
+                    Later
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
         <section className="editor-canvas" aria-label="Canvas preview">
           <div className="canvas-placeholder">

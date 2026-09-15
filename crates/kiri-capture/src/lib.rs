@@ -201,6 +201,18 @@ impl RecordingClock {
             self.paused_total += paused_at.elapsed();
         }
     }
+    /// Total time spent paused, excluding any currently-open pause interval
+    /// plus the open interval when paused. Mirrors Recordly's
+    /// pause-segment accounting so session manifests can report
+    /// `pausedDuration` accurately.
+    #[must_use]
+    pub fn paused_duration_micros(&self) -> i64 {
+        let mut total = self.paused_total;
+        if let Some(paused_at) = self.paused_at {
+            total += paused_at.elapsed();
+        }
+        total.as_micros().min(i64::MAX as u128) as i64
+    }
 }
 
 pub struct BoundedSender<T> {
@@ -326,15 +338,135 @@ impl RecoveryManifest {
         }
         Ok(Some(value))
     }
+    /// Lenient replay for listing candidates. A single corrupt manifest must
+    /// not fail the whole recent-projects scan (Recordly skips unreadable
+    /// diagnostics the same way). Strict [`Self::replay`] is still used when
+    /// the user explicitly chooses to recover a project.
+    pub fn replay_lenient(project_root: &Path) -> Option<Self> {
+        Self::replay(project_root).ok()?
+    }
     pub fn playable_segments(&self, project_root: &Path) -> Vec<RecoverySegment> {
         self.segments
             .iter()
             .filter(|segment| {
-                segment.finalized && project_root.join(&segment.relative_path).is_file()
+                if !segment.finalized {
+                    return false;
+                }
+                let path = project_root.join(&segment.relative_path);
+                // Recordly rejects empty/tiny outputs; Kiri keeps the cheaper
+                // `> 0 bytes` check so existing fixtures (7-byte stubs) stay
+                // playable while zero-byte partials are skipped.
+                match fs::metadata(&path) {
+                    Ok(meta) => meta.is_file() && meta.len() > 0,
+                    Err(_) => false,
+                }
             })
             .cloned()
             .collect()
     }
+}
+
+/// Recordly companion conventions, kept additive so the existing `.kiri`
+/// layout (`media/screen-0001.mp4`, `media/microphone-0001.wav`, …) never
+/// changes. New sidecars reuse Recordly's suffixes:
+///
+/// - `<video-stem>.recording-diagnostics.json` (diagnostics log)
+/// - `<audio-path>.json` with `{ "startDelayMs": n }` (timing metadata)
+#[must_use]
+pub fn diagnostics_sidecar_path(video_path: &Path) -> PathBuf {
+    // `with_extension` replaces only the final extension, so
+    // `screen-0001.mp4` becomes `screen-0001.recording-diagnostics.json`,
+    // matching Recordly's `getRecordingDiagnosticsPath`.
+    video_path.with_extension("recording-diagnostics.json")
+}
+
+/// Appends `.json` (does not replace the audio extension), matching
+/// Recordly's `${sidecarPath}.json` timing sidecars.
+#[must_use]
+pub fn audio_timing_sidecar_path(audio_path: &Path) -> PathBuf {
+    let mut text = audio_path.as_os_str().to_owned();
+    text.push(".json");
+    PathBuf::from(text)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTimingMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_delay_ms: Option<i64>,
+}
+
+impl AudioTimingMetadata {
+    /// Best-effort write of the timing sidecar; failures are returned so the
+    /// caller can record them in diagnostics instead of failing the stop path.
+    pub fn write_sidecar(
+        audio_path: &Path,
+        start_delay_ms: Option<i64>,
+    ) -> Result<(), CaptureError> {
+        let sidecar = audio_timing_sidecar_path(audio_path);
+        if let Some(parent) = sidecar.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(
+            &sidecar,
+            serde_json::to_vec_pretty(&Self { start_delay_ms })?,
+        )?;
+        Ok(())
+    }
+}
+
+/// Append-only diagnostics log written next to each screen segment, mirroring
+/// Recordly's `<video>.recording-diagnostics.json` event log shape
+/// (`{ version, createdAt, updatedAt, videoPath, events, latest }`).
+pub fn append_diagnostics_snapshot(
+    video_path: &Path,
+    snapshot: &serde_json::Value,
+) -> Result<PathBuf, CaptureError> {
+    let sidecar = diagnostics_sidecar_path(video_path);
+    if let Some(parent) = sidecar.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let now = Utc::now().to_rfc3339();
+    let mut log: serde_json::Value = if sidecar.is_file() {
+        serde_json::from_slice(&fs::read(&sidecar)?).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let obj = log.as_object_mut().ok_or_else(|| {
+        CaptureError::InvalidConfig("diagnostics sidecar is not an object".into())
+    })?;
+    if obj.get("version").is_none() {
+        obj.insert("version".into(), serde_json::json!(1));
+    }
+    if obj.get("createdAt").is_none() {
+        obj.insert("createdAt".into(), serde_json::json!(now.clone()));
+    }
+    obj.insert("updatedAt".into(), serde_json::json!(now.clone()));
+    obj.insert(
+        "videoPath".into(),
+        serde_json::json!(video_path.to_string_lossy().replace('\\', "/")),
+    );
+    obj.insert(
+        "diagnosticsPath".into(),
+        serde_json::json!(sidecar.to_string_lossy().replace('\\', "/")),
+    );
+    let events = obj
+        .entry("events".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    if let Some(list) = events.as_array_mut() {
+        let mut event = serde_json::json!({ "timestamp": now });
+        if let Some(map) = event.as_object_mut()
+            && let Some(snap) = snapshot.as_object()
+        {
+            for (key, value) in snap {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+        list.push(event.clone());
+        obj.insert("latest".into(), event);
+    }
+    fs::write(&sidecar, serde_json::to_vec_pretty(&log)?)?;
+    Ok(sidecar)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -492,5 +624,74 @@ mod tests {
         manifest.commit(temp.path()).unwrap();
         let replayed = RecoveryManifest::replay(temp.path()).unwrap().unwrap();
         assert_eq!(replayed.playable_segments(temp.path()).len(), 1);
+    }
+
+    #[test]
+    fn empty_files_are_not_playable_and_corrupt_manifest_is_skipped_leniently() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("media")).unwrap();
+        fs::write(temp.path().join("media/screen-0001.mp4"), b"").unwrap();
+        let mut manifest = RecoveryManifest::new(Uuid::new_v4(), ClockOrigin::now().unwrap());
+        manifest.segments.push(RecoverySegment {
+            id: Uuid::new_v4(),
+            kind: SegmentKind::Screen,
+            relative_path: "media/screen-0001.mp4".into(),
+            start_micros: 0,
+            duration_micros: Some(1_000_000),
+            finalized: true,
+        });
+        manifest.commit(temp.path()).unwrap();
+        let replayed = RecoveryManifest::replay(temp.path()).unwrap().unwrap();
+        assert_eq!(replayed.playable_segments(temp.path()).len(), 0);
+        // Corrupt the manifest: strict replay errors, lenient replay skips.
+        fs::write(
+            temp.path().join("recovery/active-recording.json"),
+            b"{not json",
+        )
+        .unwrap();
+        assert!(RecoveryManifest::replay(temp.path()).is_err());
+        assert!(RecoveryManifest::replay_lenient(temp.path()).is_none());
+    }
+
+    #[test]
+    fn recordly_sidecar_naming_matches_reference_conventions() {
+        let video = Path::new("media/screen-0001.mp4");
+        assert_eq!(
+            diagnostics_sidecar_path(video),
+            PathBuf::from("media/screen-0001.recording-diagnostics.json")
+        );
+        let audio = Path::new("media/microphone-0001.wav");
+        assert_eq!(
+            audio_timing_sidecar_path(audio),
+            PathBuf::from("media/microphone-0001.wav.json")
+        );
+    }
+
+    #[test]
+    fn diagnostics_sidecar_appends_events_like_recordly() {
+        let temp = tempfile::tempdir().unwrap();
+        let video = temp.path().join("media/screen-0001.mp4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"segment").unwrap();
+        let snapshot = serde_json::json!({ "phase": "stop", "encodedFrames": 10 });
+        let sidecar = append_diagnostics_snapshot(&video, &snapshot).unwrap();
+        assert_eq!(sidecar, diagnostics_sidecar_path(&video));
+        let log: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(log["version"], serde_json::json!(1));
+        assert_eq!(log["events"].as_array().unwrap().len(), 1);
+        append_diagnostics_snapshot(&video, &snapshot).unwrap();
+        let log: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(log["events"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn paused_duration_tracks_open_pause_interval() {
+        let mut clock = RecordingClock::start().unwrap();
+        assert_eq!(clock.paused_duration_micros(), 0);
+        clock.pause();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(clock.paused_duration_micros() >= 1_000);
+        clock.resume();
+        assert!(clock.paused_duration_micros() >= 1_000);
     }
 }

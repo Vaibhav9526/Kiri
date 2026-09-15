@@ -28,8 +28,10 @@ pub fn enumerate_sources() -> Result<Vec<CaptureSource>, CaptureError> {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
+        // One bad monitor must not fail the whole picker; skip it like
+        // Recordly skips unavailable displays during availability checks.
         if !unsafe { GetMonitorInfoW(hmonitor, &mut info) }.as_bool() {
-            return Err(CaptureError::Native("GetMonitorInfoW failed".into()));
+            continue;
         }
         result.push(CaptureSource {
             id: format!(
@@ -78,6 +80,40 @@ pub fn enumerate_sources() -> Result<Vec<CaptureSource>, CaptureError> {
         });
     }
     Ok(result)
+}
+
+/// Friendly preflight for a capture source, mirroring Recordly's
+/// availability phase. Returns the live source or a clear,
+/// user-actionable error for missing/minimized/closed/protected windows.
+pub fn validate_source_for_capture(source_id: &str) -> Result<CaptureSource, CaptureError> {
+    let enumerated = enumerate_sources()?;
+    let source = enumerated
+        .into_iter()
+        .find(|source| source.id == source_id)
+        .ok_or_else(|| {
+            CaptureError::SourceUnavailable(format!(
+                "selected source is no longer available ({source_id}); pick another display or window"
+            ))
+        })?;
+    match source.availability {
+        SourceAvailability::Available => Ok(source),
+        SourceAvailability::Minimized => Err(CaptureError::SourceUnavailable(format!(
+            "selected window '{}' is minimized; restore it and try again",
+            source.title
+        ))),
+        SourceAvailability::Closed => Err(CaptureError::SourceUnavailable(format!(
+            "selected window '{}' was closed before recording started",
+            source.title
+        ))),
+        SourceAvailability::Protected => Err(CaptureError::SourceUnavailable(format!(
+            "selected window '{}' is protected and cannot be captured; pick another source",
+            source.title
+        ))),
+        SourceAvailability::Invalid => Err(CaptureError::SourceUnavailable(format!(
+            "selected source '{}' is not currently capturable",
+            source.title
+        ))),
+    }
 }
 
 mod session {
@@ -164,10 +200,10 @@ mod session {
                 self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
                 return Ok(());
             }
-            self.encoder
-                .as_mut()
-                .expect("encoder exists")
-                .send_frame(frame)?;
+            let Some(encoder) = self.encoder.as_mut() else {
+                return Ok(());
+            };
+            encoder.send_frame(frame)?;
             self.last_frame = Some(now);
             self.metrics.encoded.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -198,7 +234,25 @@ mod session {
         config: ScreenRecordingConfig,
     ) -> Result<ScreenRecordingHandle, CaptureError> {
         if !matches!(config.fps, 30 | 60) {
-            return Err(CaptureError::InvalidConfig("FPS must be 30 or 60".into()));
+            return Err(CaptureError::InvalidConfig(
+                "FPS must be 30 or 60; check recording settings".into(),
+            ));
+        }
+        if config.source_id.trim().is_empty() {
+            return Err(CaptureError::InvalidConfig(
+                "no capture source selected; pick a display or window".into(),
+            ));
+        }
+        // Fail fast with a friendly message before allocating the encoder or
+        // touching the filesystem, mirroring Recordly's availability phase.
+        crate::windows::validate_source_for_capture(&config.source_id)?;
+        if let Some(parent) = config.output.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CaptureError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot create output folder: {e}"),
+                ))
+            })?;
         }
         let metrics = Arc::new(ScreenMetrics::default());
         let interval = MinimumUpdateIntervalSettings::Custom(std::time::Duration::from_micros(
@@ -209,7 +263,12 @@ mod session {
                 .map_err(|e| CaptureError::Native(e.to_string()))?
                 .into_iter()
                 .find(|monitor| monitor.device_name().ok().as_deref() == Some(value))
-                .ok_or_else(|| CaptureError::SourceUnavailable(config.source_id.clone()))?;
+                .ok_or_else(|| {
+                    CaptureError::SourceUnavailable(format!(
+                        "selected display is no longer available ({}); pick another display",
+                        config.source_id
+                    ))
+                })?;
             let flags = (
                 monitor
                     .width()
@@ -234,21 +293,33 @@ mod session {
             ))
             .map_err(|e| CaptureError::Native(e.to_string()))?
         } else if let Some(value) = config.source_id.strip_prefix("window:") {
-            let raw = value
-                .parse::<usize>()
-                .map_err(|_| CaptureError::InvalidConfig("invalid window ID".into()))?
-                as *mut std::ffi::c_void;
+            let raw = value.parse::<usize>().map_err(|_| {
+                CaptureError::InvalidConfig("invalid window ID; reselect the window".into())
+            })? as *mut std::ffi::c_void;
             let window = Window::from_raw_hwnd(raw);
             if !window.is_valid() {
-                return Err(CaptureError::SourceUnavailable(config.source_id));
+                return Err(CaptureError::SourceUnavailable(
+                    "selected window is no longer available; it may have been closed".into(),
+                ));
             }
             let rectangle = window
                 .rect()
                 .map_err(|e| CaptureError::Native(e.to_string()))?;
-            let width = u32::try_from(rectangle.right - rectangle.left)
-                .map_err(|_| CaptureError::InvalidConfig("invalid window width".into()))?;
-            let height = u32::try_from(rectangle.bottom - rectangle.top)
-                .map_err(|_| CaptureError::InvalidConfig("invalid window height".into()))?;
+            let width = u32::try_from(rectangle.right - rectangle.left).map_err(|_| {
+                CaptureError::SourceUnavailable(
+                    "selected window has no visible area; restore it and try again".into(),
+                )
+            })?;
+            let height = u32::try_from(rectangle.bottom - rectangle.top).map_err(|_| {
+                CaptureError::SourceUnavailable(
+                    "selected window has no visible area; restore it and try again".into(),
+                )
+            })?;
+            if width == 0 || height == 0 {
+                return Err(CaptureError::SourceUnavailable(
+                    "selected window has no visible area; restore it and try again".into(),
+                ));
+            }
             let flags = (
                 width,
                 height,
@@ -270,7 +341,7 @@ mod session {
             .map_err(|e| CaptureError::Native(e.to_string()))?
         } else {
             return Err(CaptureError::InvalidConfig(
-                "unknown capture source ID".into(),
+                "unknown capture source ID; reselect the source".into(),
             ));
         };
         Ok(ScreenRecordingHandle {
