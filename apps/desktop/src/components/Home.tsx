@@ -47,14 +47,25 @@ export function Home() {
     try {
       const item = await createProject(parent, title);
       setRecents((current) => [item, ...current.filter((value) => value.id !== item.id)]);
-      setNotice(`Created ${item.title}`);
       setIsNaming(false);
-      await setActiveProject(item.path);
-      if (createIntent === 'recording') {
-        const selector = await WebviewWindow.getByLabel('source-selector');
-        await selector?.show();
-        await selector?.setFocus();
+      const warnings: string[] = [];
+      try {
+        await setActiveProject(item.path);
+      } catch (error) {
+        warnings.push(`capture setup may not see it yet (${String(error)})`);
       }
+      if (createIntent === 'recording') {
+        try {
+          const selector = await WebviewWindow.getByLabel('source-selector');
+          await selector?.show();
+          await selector?.setFocus();
+        } catch (error) {
+          warnings.push(`capture window did not open (${String(error)})`);
+        }
+      }
+      setNotice(
+        warnings.length ? `Created ${item.title}. Warning: ${warnings.join('; ')}` : `Created ${item.title}`,
+      );
     } catch (error) {
       setNotice(`Project was not created. ${String(error)}`);
     } finally {
@@ -71,7 +82,11 @@ export function Home() {
     try {
       const item = await openProject(path);
       setRecents((current) => [item, ...current.filter((value) => value.id !== item.id)]);
-      await setActiveProject(item.path);
+      try {
+        await setActiveProject(item.path);
+      } catch {
+        // Local fallback keeps capture working; backend sync is best-effort here.
+      }
       setNotice(`Opened ${item.title}`);
     } catch (error) {
       setNotice(`Project could not be opened. ${String(error)}`);
@@ -92,7 +107,11 @@ export function Home() {
       const project = await recoverRecording(item.projectPath);
       setRecoveries((current) => current.filter((value) => value.sessionId !== item.sessionId));
       setRecents((current) => [project, ...current.filter((value) => value.id !== project.id)]);
-      await setActiveProject(project.path);
+      try {
+        await setActiveProject(project.path);
+      } catch {
+        // Local fallback keeps capture working; backend sync is best-effort here.
+      }
       setNotice(
         `Recovered ${item.finalizedSegments} finalized segments from ${item.projectTitle}.`,
       );

@@ -297,8 +297,11 @@ export function SourceSelector() {
     }
     setCounting(0);
     try {
-      await setActiveProject(projectPath);
-      await setSelectedSource(sourceId);
+      // Session sync is best-effort: startRecording is the real gate and the
+      // backend also reads the request payload, so a sync failure must never
+      // masquerade as "recording did not start".
+      await setActiveProject(projectPath).catch(() => undefined);
+      await setSelectedSource(sourceId).catch(() => undefined);
       await startRecording({
         projectPath,
         sourceId,
