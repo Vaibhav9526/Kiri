@@ -92,3 +92,90 @@ export const recoveryCandidateSchema = z.object({
   finalizedSegments: z.number().int().nonnegative(),
 });
 export type RecoveryCandidate = z.infer<typeof recoveryCandidateSchema>;
+
+// Recordly-derived editor schema (mirrors kiri-project/src/editor.rs).
+// AI-generated fields are accepted but never produced locally in Phase 0-2.
+export const zoomRegionSchema = z.object({
+  id: z.string(),
+  startMs: z.number().int(),
+  endMs: z.number().int(),
+  depth: z.number().int().min(1).max(6),
+  focus: z.object({ cx: z.number(), cy: z.number() }),
+  mode: z.enum(['auto', 'manual']).default('manual'),
+});
+export type ZoomRegion = z.infer<typeof zoomRegionSchema>;
+
+export const clipRegionSchema = z.object({
+  id: z.string(),
+  startMs: z.number().int(),
+  endMs: z.number().int(),
+  speed: z.number().min(0.25).max(4),
+  muted: z.boolean(),
+});
+export type ClipRegion = z.infer<typeof clipRegionSchema>;
+
+export const captionCueSchema = z.object({
+  id: z.string(),
+  startMs: z.number().int(),
+  endMs: z.number().int(),
+  text: z.string(),
+  words: z
+    .array(z.object({ text: z.string(), startMs: z.number().int(), endMs: z.number().int() }))
+    .default([]),
+});
+export type CaptionCue = z.infer<typeof captionCueSchema>;
+
+export const editorStateSchema = z.object({
+  version: z.number().int(),
+  appearance: z.object({
+    background: z.string(),
+    padding: z.number(),
+    borderRadius: z.number(),
+    shadow: z.number(),
+    aspectRatio: z.string().nullable(),
+  }),
+  zooms: zoomRegionSchema.array(),
+  clips: clipRegionSchema.array(),
+  trims: z.array(z.object({ id: z.string(), startMs: z.number().int(), endMs: z.number().int() })),
+  speeds: z.array(
+    z.object({
+      id: z.string(),
+      startMs: z.number().int(),
+      endMs: z.number().int(),
+      speed: z.number(),
+    }),
+  ),
+  captions: captionCueSchema.array(),
+  webcam: z.object({
+    enabled: z.boolean(),
+    sourcePath: z.string().nullable(),
+    timeOffsetMs: z.number().int(),
+    mirror: z.boolean(),
+    crop: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+    positionX: z.number(),
+    positionY: z.number(),
+    size: z.number(),
+    reactToZoom: z.boolean(),
+    roundness: z.number(),
+    shadow: z.number(),
+  }),
+});
+export type EditorState = z.infer<typeof editorStateSchema>;
+
+export const allSettingsSchema = z.object({
+  app: z.object({
+    theme: z.enum(['system', 'light', 'dark']),
+    reduceMotionFollowsSystem: z.boolean(),
+    recordingsDir: z.string().nullable(),
+  }),
+  recording: z.object({
+    microphoneId: z.string().nullable(),
+    systemAudio: z.boolean(),
+    cameraId: z.string().nullable(),
+    fps: z.number().int(),
+  }),
+  countdown: z.object({ seconds: z.number().int() }),
+  hudOverlay: z.object({ visible: z.boolean(), clickEffects: z.boolean() }),
+  shortcuts: z.enum(['ctrl-shift', 'ctrl-alt']),
+});
+export type AllSettings = z.infer<typeof allSettingsSchema>;

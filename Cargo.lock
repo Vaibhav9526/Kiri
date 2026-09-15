@@ -2094,7 +2094,9 @@ dependencies = [
  "kiri-jobs",
  "kiri-persistence",
  "kiri-project",
+ "kiri-settings",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -2146,6 +2148,16 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "uuid",
+]
+
+[[package]]
+name = "kiri-settings"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

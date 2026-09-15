@@ -22,6 +22,16 @@ use uuid::Uuid;
 struct AppState {
     database: Mutex<Database>,
     recording: Mutex<Option<ActiveRecording>>,
+    /// Backend-held session state shared across windows. Recordly keeps the
+    /// selected source/project in the Electron main process; Tauri webviews do
+    /// not share `localStorage`, so the Rust host is the source of truth.
+    session: Mutex<SessionState>,
+}
+
+#[derive(Debug, Default)]
+struct SessionState {
+    active_project: Option<PathBuf>,
+    selected_source: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -30,6 +40,8 @@ enum CommandError {
     Project(#[from] kiri_project::ProjectError),
     #[error("{0}")]
     Persistence(#[from] kiri_persistence::PersistenceError),
+    #[error("{0}")]
+    Settings(#[from] kiri_settings::SettingsError),
     #[error("invalid project location: {0}")]
     InvalidPath(String),
     #[error("recording failed: {0}")]
@@ -165,6 +177,79 @@ fn open_project(
         .expect("database mutex poisoned")
         .upsert_recent(&manifest.id.to_string(), &manifest.title, &request.path)?;
     Ok(summary(&request.path, &manifest))
+}
+
+#[tauri::command]
+fn set_active_project(path: PathBuf, state: State<'_, AppState>) -> Result<(), CommandError> {
+    state
+        .session
+        .lock()
+        .expect("session mutex poisoned")
+        .active_project = Some(path);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_active_project(state: State<'_, AppState>) -> Option<PathBuf> {
+    state
+        .session
+        .lock()
+        .expect("session mutex poisoned")
+        .active_project
+        .clone()
+}
+
+#[tauri::command]
+fn set_selected_source(source_id: String, state: State<'_, AppState>) -> Result<(), CommandError> {
+    state
+        .session
+        .lock()
+        .expect("session mutex poisoned")
+        .selected_source = Some(source_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_selected_source(state: State<'_, AppState>) -> Option<String> {
+    state
+        .session
+        .lock()
+        .expect("session mutex poisoned")
+        .selected_source
+        .clone()
+}
+
+#[tauri::command]
+fn get_platform() -> String {
+    std::env::consts::OS.into()
+}
+
+fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| CommandError::Recording(e.to_string()))?
+        .join("settings.json"))
+}
+
+#[tauri::command]
+fn get_all_settings(app: tauri::AppHandle) -> Result<kiri_settings::AllSettings, CommandError> {
+    let store = kiri_settings::SettingsStore::new(settings_path(&app)?);
+    Ok(store.load()?)
+}
+
+#[tauri::command]
+fn save_all_settings(
+    app: tauri::AppHandle,
+    settings: kiri_settings::AllSettings,
+) -> Result<(), CommandError> {
+    let normalized = kiri_settings::AllSettings {
+        recording: settings.recording.normalized(),
+        countdown: settings.countdown.normalized(),
+        ..settings
+    };
+    kiri_settings::SettingsStore::new(settings_path(&app)?).save(&normalized)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -783,12 +868,20 @@ panic={info}
             app.manage(AppState {
                 database: Mutex::new(database),
                 recording: Mutex::new(None),
+                session: Mutex::new(SessionState::default()),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             create_project,
             open_project,
+            set_active_project,
+            get_active_project,
+            set_selected_source,
+            get_selected_source,
+            get_platform,
+            get_all_settings,
+            save_all_settings,
             list_recent_projects,
             list_capture_sources,
             capture_source_thumbnail,

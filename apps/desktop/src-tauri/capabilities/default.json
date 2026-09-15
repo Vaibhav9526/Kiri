@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Kiri desktop capabilities",
-  "windows": ["main", "source-selector", "recording-controller"],
+  "windows": ["main", "source-selector", "recording-controller", "countdown", "hud-overlay", "editor"],
   "permissions": [
     "core:default",
     "dialog:allow-open",

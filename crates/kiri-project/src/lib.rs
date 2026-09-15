@@ -1,5 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+pub mod editor;
+pub use editor::EditorState;
 use std::{
     fs,
     io::Write,
@@ -87,6 +90,8 @@ pub struct ProjectManifest {
     pub cache_entries: Vec<CacheEntry>,
     #[serde(default)]
     pub recording_sessions: Vec<RecordingSessionMetadata>,
+    #[serde(default)]
+    pub editor: EditorState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -201,6 +206,7 @@ impl ProjectManifest {
             artifacts: vec![],
             cache_entries: vec![],
             recording_sessions: vec![],
+            editor: EditorState::default(),
         }
     }
 
