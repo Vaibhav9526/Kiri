@@ -253,6 +253,30 @@ fn save_all_settings(
 }
 
 #[tauri::command]
+fn get_editor_state(project_path: PathBuf) -> Result<kiri_project::EditorState, CommandError> {
+    Ok(open_project_domain(&project_path)?.editor)
+}
+
+#[tauri::command]
+fn save_editor_state(
+    project_path: PathBuf,
+    editor: kiri_project::EditorState,
+) -> Result<(), CommandError> {
+    let mut project = open_project_domain(&project_path)?;
+    project.editor = editor.normalized();
+    project.updated_at = chrono::Utc::now();
+    autosave_project(&project_path, &mut project)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn plan_export(
+    request: kiri_export::ExportRequest,
+) -> Result<kiri_export::ExportPlan, CommandError> {
+    kiri_export::plan_export(&request).map_err(|e| CommandError::Recording(e.to_string()))
+}
+
+#[tauri::command]
 fn list_recent_projects(state: State<'_, AppState>) -> Result<Vec<ProjectSummary>, CommandError> {
     Ok(state
         .database
@@ -909,6 +933,9 @@ panic={info}
             get_platform,
             get_all_settings,
             save_all_settings,
+            get_editor_state,
+            save_editor_state,
+            plan_export,
             list_recent_projects,
             list_capture_sources,
             capture_source_thumbnail,

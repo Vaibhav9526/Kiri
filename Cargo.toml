@@ -11,6 +11,7 @@ members = [
   "crates/kiri-persistence",
   "crates/kiri-project",
   "crates/kiri-settings",
+  "crates/kiri-export",
 ]
 
 [workspace.package]

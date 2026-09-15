@@ -2090,6 +2090,7 @@ dependencies = [
  "kiri-audio",
  "kiri-camera",
  "kiri-capture",
+ "kiri-export",
  "kiri-input",
  "kiri-jobs",
  "kiri-persistence",
@@ -2102,6 +2103,17 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-log",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "kiri-export"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "uuid",
 ]

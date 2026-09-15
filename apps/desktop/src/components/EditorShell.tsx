@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { getActiveProject, listRecentProjects } from '@/ipc/client';
-import type { ProjectSummary } from '@/ipc/types';
+import { getActiveProject, getEditorState, listRecentProjects } from '@/ipc/client';
+import type { EditorState, ProjectSummary } from '@/ipc/types';
 
 // Phase 0 redo: Recordly editor-shell skeleton (top bar, left rail, canvas,
 // right inspector, bottom timeline). Canvas/timeline become functional in
@@ -10,12 +10,15 @@ const RAIL = ['Media', 'Background', 'Annotations', 'Captions', 'Audio', 'AI', '
 export function EditorShell() {
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [section, setSection] = useState<(typeof RAIL)[number]>('Media');
+  const [editor, setEditor] = useState<EditorState | null>(null);
 
   useEffect(() => {
     void (async () => {
       const active = await getActiveProject().catch(() => '');
       const recents = await listRecentProjects().catch(() => []);
-      setProject(recents.find((item) => item.path === active) ?? recents[0] ?? null);
+      const current = recents.find((item) => item.path === active) ?? recents[0] ?? null;
+      setProject(current);
+      if (current) setEditor(await getEditorState(current.path).catch(() => null));
     })();
   }, []);
 
@@ -63,7 +66,11 @@ export function EditorShell() {
         </aside>
       </div>
       <footer className="editor-timeline" aria-label="Timeline">
-        <span>Timeline: trim, split, zoom regions, and captions arrive in Phase 2.</span>
+        <span>
+          {editor
+            ? `Timeline: ${editor.zooms.length} zooms · ${editor.clips.length} clips · ${editor.captions.length} captions`
+            : 'Timeline: trim, split, zoom regions, and captions arrive in Phase 2.'}
+        </span>
       </footer>
     </main>
   );

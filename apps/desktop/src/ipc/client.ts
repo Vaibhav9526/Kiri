@@ -5,6 +5,7 @@ import {
   audioMeterSchema,
   cameraDeviceSchema,
   captureSourceSchema,
+  editorStateSchema,
   projectSummarySchema,
   recoveryCandidateSchema,
   type AllSettings,
@@ -12,6 +13,7 @@ import {
   type AudioMeter,
   type CameraDevice,
   type CaptureSource,
+  type EditorState,
   recordingStatusSchema,
   stopRecordingResultSchema,
   type RecordingStatus,
@@ -122,4 +124,15 @@ export async function getAllSettings(): Promise<AllSettings | null> {
 export async function saveAllSettings(settings: AllSettings): Promise<void> {
   if (!isTauri()) return;
   await invoke('save_all_settings', { settings });
+}
+export async function getEditorState(projectPath: string): Promise<EditorState | null> {
+  if (!isTauri()) return null;
+  return editorStateSchema.parse(await invoke('get_editor_state', { projectPath }));
+}
+export async function saveEditorState(
+  projectPath: string,
+  editor: EditorState,
+): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('save_editor_state', { projectPath, editor });
 }
